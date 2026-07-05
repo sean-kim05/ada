@@ -36,7 +36,7 @@ cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 cd frontend && npm run dev         # → http://localhost:5173
 ```
 
-Health check: `curl 127.0.0.1:8000/api/health` → `{"status":"ok","model":"claude-haiku-4-5"}`.
+Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-haiku-4-5"}`.
 
 ## Backend layout (`backend/app/`)
 
