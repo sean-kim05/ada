@@ -1,0 +1,13 @@
+# secrets
+backend/.env
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+# node
+frontend/node_modules/
+frontend/dist/
+# misc
+.DS_Store
+# windows / wsl clutter
+*:Zone.Identifier
