@@ -19,8 +19,13 @@ Design docs: `ARCHITECTURE.md`, `ROADMAP.md`. Deck design reference: `Ada-standa
 - **M2** — multi-agent Fleet. Runs any agent type concurrently; Fleet view shows a live
   card per agent, a launcher, and click-to-focus trace.
 - **M3** — `claude_code` agent ("Forge"): Ada delegates real coding to Claude Code running
-  headless as a subprocess, sandboxed to `sandbox/`, streamed live into a Terminal panel.
-  Runs on the **Max plan** (no API key, no per-token billing).
+  headless as a subprocess, sandboxed to `sandbox/` (or any per-run `workdir`), streamed live
+  into a Terminal panel. Runs on the **Max plan** (no API key, no per-token billing).
+- **M4** — the Arena: watch two agents talk. One run drives a back-and-forth between two
+  personas over a topic (MESSAGE events per turn); the Arena view animates the flow between
+  them. Pure conversation on Haiku — and it proves the message-passing plumbing for M5.
+- Every persona has a distinct **identity** (glyph + colour): Ada=amber spark, Scout=cyan
+  lens, Atlas=violet checklist, Forge=green code-brackets — surfaced in Fleet/Arena/launcher.
 
 M1/M2 brains run on Haiku; M3 runs the `claude` CLI's default model (Opus). Deck's
 Calendar / To-do / Reminders are still **demo data** (M1 tail).
@@ -48,6 +53,9 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 - `agents/claude_code.py` — the M3 driver: subprocesses `claude -p --output-format stream-json`,
   parses its events, and re-emits them as our AgentEvents (LOG drives the Terminal; tool_use/
   tool_result drive the trace; result → FINAL). Emits FINAL on success, raises on failure.
+- `agents/arena.py` — the M4 Arena engine: `run_arena(emitter, topic, a_type, b_type, rounds)`
+  drives two persona agents turn-by-turn, emitting a MESSAGE event per turn. Supervisor has
+  `start_arena()`; endpoint `POST /api/arena`; streams over the normal `/api/runs/{id}/ws`.
 - `agents/registry.py` — `SPECS` (personas + tools): `ada`/Ada (secretary + `spawn_agent`),
   `researcher`/Scout (`web_search` + `save_note`), `planner`/Atlas (task tools), and
   `claude_code`/Forge (`driver="claude_code"` → subprocess, not the LLM loop). `AgentSpec.driver`

@@ -4,11 +4,13 @@ import {
   spawnAgent,
   listAgents,
   openFleet,
+  startArena,
   type AgentEvent,
   type AgentType,
   type RunSnapshot,
   type RunStatus,
   type FleetMsg,
+  type ArenaMsg,
 } from "./lib/ada";
 
 interface ChatMsg {
@@ -113,12 +115,65 @@ const ICONS: Record<string, JSX.Element> = {
       <path d="M14 3v5h5M9 13h7M9 17h5" />
     </>
   ),
+  Arena: (
+    <>
+      <circle cx="7" cy="12" r="3.4" />
+      <circle cx="17" cy="12" r="3.4" />
+      <path d="M10.4 12h3.2" />
+    </>
+  ),
 };
 const NavIcon = ({ name }: { name: string }) => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
     {ICONS[name]}
   </svg>
 );
+
+// Per-agent identity: a distinct glyph + colour for each persona.
+const AGENT_ICONS: Record<string, JSX.Element> = {
+  ada: <path d="M12 3l1.9 5.2L19 10l-5.1 1.8L12 17l-1.9-5.2L5 10l5.1-1.8z" />,
+  researcher: (
+    <>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="M20 20l-4-4" />
+    </>
+  ),
+  planner: (
+    <>
+      <path d="M10 6h10M10 12h10M10 18h10" />
+      <path d="M4.5 6l1.1 1.1L7.5 4.6M4.5 12l1.1 1.1L7.5 10.6M4.5 18l1.1 1.1L7.5 16.6" />
+    </>
+  ),
+  claude_code: (
+    <>
+      <path d="M9 8l-4 4 4 4M15 8l4 4-4 4" />
+      <path d="M13 6l-2 12" />
+    </>
+  ),
+  arena: (
+    <>
+      <circle cx="7" cy="12" r="3.4" />
+      <circle cx="17" cy="12" r="3.4" />
+      <path d="M10.4 12h3.2" />
+    </>
+  ),
+};
+function AgentGlyph({ type, size = 16 }: { type?: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      {AGENT_ICONS[type ?? ""] ?? AGENT_ICONS.ada}
+    </svg>
+  );
+}
+function typeColor(type?: string): string {
+  return type === "researcher"
+    ? "#5ec7d6"
+    : type === "planner"
+    ? "#a68bf0"
+    : type === "claude_code"
+    ? "#7fd88f"
+    : "var(--accent)";
+}
 
 // The "punch card" A — the ADA brand mark, a matrix of gold cells forming an A.
 const A_BITS = [
@@ -149,6 +204,7 @@ const NAV = [
   { name: "Chat", view: "deck" as const },
   { name: "Agent Trace", view: "deck" as const },
   { name: "Fleet", view: "fleet" as const },
+  { name: "Arena", view: "arena" as const },
   { name: "Calendar", view: "deck" as const },
   { name: "Tasks", view: "deck" as const },
   { name: "Docs", view: "deck" as const, pill: "RAG" },
@@ -189,7 +245,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [tasks, setTasks] = useState(INITIAL_TASKS);
   const [newTask, setNewTask] = useState("");
-  const [view, setView] = useState<"deck" | "fleet">("deck");
+  const [view, setView] = useState<"deck" | "fleet" | "arena">("deck");
   const [fleet, setFleet] = useState<Record<string, FleetRun>>({});
   const [agentTypes, setAgentTypes] = useState<AgentType[]>([]);
   const [focused, setFocused] = useState<string | null>(null);
@@ -306,7 +362,7 @@ export default function App() {
 
         <nav style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 28 }}>
           {NAV.map((n) => {
-            const active = n.name === (view === "fleet" ? "Fleet" : "Chat");
+            const active = view === n.view && (n.view !== "deck" || n.name === "Chat");
             return (
             <div
               key={n.name}
@@ -472,7 +528,7 @@ export default function App() {
           </div>
         </section>
         </>
-        ) : (
+        ) : view === "fleet" ? (
           <FleetView
             fleet={fleet}
             agentTypes={agentTypes}
@@ -487,6 +543,8 @@ export default function App() {
             setLaunchDir={setLaunchDir}
             clock={clock}
           />
+        ) : (
+          <ArenaView agentTypes={agentTypes} />
         )}
       </main>
     </div>
@@ -804,6 +862,7 @@ function FleetView(p: FleetProps) {
   const focusId = p.focused ?? runs[0]?.id ?? null;
   const focusRun = focusId ? p.fleet[focusId] : null;
   const launchName = p.agentTypes.find((a) => a.type === p.launchType)?.name ?? "agent";
+  const launchBlurb = p.agentTypes.find((a) => a.type === p.launchType)?.blurb ?? "";
   // auto-show the Terminal for coding agents, the Trace for the rest
   const isCoder = focusRun?.meta?.agent_type === "claude_code";
   useEffect(() => {
@@ -832,12 +891,24 @@ function FleetView(p: FleetProps) {
                   onClick={() => p.setLaunchType(a.type)}
                   style={{ ...chip, ...(on ? { color: "var(--text)", borderColor: "rgba(var(--accent-rgb),.4)", background: "rgba(var(--accent-rgb),.06)" } : {}) }}
                 >
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: accentColor(a.accent) }} />
+                  <span style={{ color: typeColor(a.type), display: "inline-flex" }}>
+                    <AgentGlyph type={a.type} size={14} />
+                  </span>
                   {a.name}
                 </button>
               );
             })}
           </div>
+          {launchBlurb && (
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ color: typeColor(p.launchType), display: "inline-flex" }}>
+                <AgentGlyph type={p.launchType} size={13} />
+              </span>
+              <span style={{ ...mono(10.5, "var(--text-faint)", ".01em"), lineHeight: 1.4 }}>
+                {launchName} · {launchBlurb}
+              </span>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8 }}>
             <input
               className="bare"
@@ -943,7 +1014,9 @@ function FleetCard({ id, run, focused, onClick, clock }: { id: string; run: Flee
       style={{ background: "var(--panel-2)", border: `1px solid ${focused ? "rgba(var(--accent-rgb),.45)" : "var(--line)"}`, borderRadius: 11, padding: "13px 14px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 9, boxShadow: focused ? "0 0 24px -14px var(--accent)" : undefined }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: accent, boxShadow: run.status === "running" ? `0 0 8px ${accent}` : undefined }} />
+        <span style={{ width: 24, height: 24, flex: "none", borderRadius: 7, display: "grid", placeItems: "center", color: accent, background: "rgba(255,255,255,.03)", border: `1px solid ${focused ? accent : "var(--line-2)"}`, boxShadow: run.status === "running" ? `0 0 10px -2px ${accent}` : undefined }}>
+          <AgentGlyph type={meta?.agent_type} size={14} />
+        </span>
         <span style={{ fontSize: 14, fontWeight: 600 }}>{meta?.name ?? "agent"}</span>
         <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5, ...mono(9.5, sc, ".1em") }}>
           {run.status === "running" && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: "adaBlink 1.1s infinite" }} />}
@@ -1025,6 +1098,200 @@ function reduceFleet(prev: Record<string, FleetRun>, m: FleetMsg): Record<string
 }
 
 /* ── helpers ───────────────────────────────── */
+/* ── arena (M4) ────────────────────────────── */
+function ArenaView({ agentTypes }: { agentTypes: AgentType[] }) {
+  const [topic, setTopic] = useState("");
+  const [aType, setAType] = useState("researcher");
+  const [bType, setBType] = useState("planner");
+  const [msgs, setMsgs] = useState<ArenaMsg[]>([]);
+  const [running, setRunning] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs.length]);
+
+  const nameOf = (t: string) => agentTypes.find((x) => x.type === t)?.name ?? t;
+  const start = async () => {
+    const tp = topic.trim();
+    if (!tp || running) return;
+    setMsgs([]);
+    setRunning(true);
+    await startArena(tp, aType, bType, 3, (m) => setMsgs((prev) => [...prev, m]));
+    setRunning(false);
+  };
+  const SAMPLES = [
+    "Ship fast and messy, or slow and polished?",
+    "Should AI agents have long-term memory by default?",
+    "Is a monorepo worth it for a small team?",
+  ];
+
+  return (
+    <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
+      <div style={{ ...panel, flex: 1 }}>
+        <div style={phead}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={mono(11, "var(--text)", ".16em")}>ARENA</span>
+            <span style={tagStyle(running ? "accent" : undefined)}>
+              {running ? "LIVE" : msgs.length ? "DONE" : "M4 · TWO AGENTS TALK"}
+            </span>
+          </div>
+          <span style={mono(10, "var(--text-faint)")}>{msgs.length} messages</span>
+        </div>
+
+        {/* launcher */}
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <ArenaPicker agentTypes={agentTypes} value={aType} onPick={setAType} disabled={running} />
+            <span style={mono(11, "var(--text-faint)", ".1em")}>VS</span>
+            <ArenaPicker agentTypes={agentTypes} value={bType} onPick={setBType} disabled={running} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              className="bare"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && start()}
+              placeholder="A topic for them to hash out…"
+              style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "10px 13px", color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13 }}
+            />
+            <button
+              className="btn-accent"
+              onClick={start}
+              disabled={running}
+              style={{ ...mono(11, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 9, padding: "0 20px", cursor: running ? "default" : "pointer", opacity: running ? 0.5 : 1 }}
+            >
+              START
+            </button>
+          </div>
+          {msgs.length === 0 && !running && (
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+              {SAMPLES.map((s) => (
+                <button key={s} className="btn-ghost" onClick={() => setTopic(s)} style={{ ...mono(10.5, "var(--text-dim)"), background: "transparent", border: "1px solid var(--line)", borderRadius: 20, padding: "5px 12px", cursor: "pointer" }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* the two combatants */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 26px", borderBottom: "1px solid var(--line)", background: "rgba(255,255,255,.012)" }}>
+          <ArenaCombatant type={aType} name={nameOf(aType)} side="left" active={running} />
+          <span style={mono(12, "var(--text-faint)", ".2em")}>VS</span>
+          <ArenaCombatant type={bType} name={nameOf(bType)} side="right" active={running} />
+        </div>
+
+        {/* message flow */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px", display: "flex", flexDirection: "column", gap: 12, position: "relative" }}>
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: "50%", width: 1, background: "var(--line)", transform: "translateX(-.5px)" }} />
+          {msgs.length === 0 && !running && (
+            <div style={{ ...mono(12, "var(--text-faint)"), textAlign: "center", marginTop: 34, position: "relative" }}>
+              Pick two agents and a topic, then hit START — watch them go back and forth.
+            </div>
+          )}
+          {msgs.map((m, i) => (
+            <ArenaMessage key={i} m={m} left={m.from_type === aType} />
+          ))}
+          {running && (
+            <div style={{ textAlign: "center", position: "relative", padding: "4px 0" }}>
+              <span style={{ display: "inline-flex", gap: 4 }}>
+                {[0, 0.18, 0.36].map((d, i) => (
+                  <span key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: `adaType 1.2s ${d}s infinite` }} />
+                ))}
+              </span>
+            </div>
+          )}
+          <div ref={endRef} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ArenaPicker({ agentTypes, value, onPick, disabled }: { agentTypes: AgentType[]; value: string; onPick: (t: string) => void; disabled?: boolean }) {
+  return (
+    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+      {agentTypes.map((a) => {
+        const on = value === a.type;
+        const c = typeColor(a.type);
+        return (
+          <button
+            key={a.type}
+            className="btn-ghost"
+            onClick={() => !disabled && onPick(a.type)}
+            title={a.blurb}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              ...mono(11, on ? "var(--text)" : "var(--text-dim)", ".02em"),
+              background: on ? "rgba(255,255,255,.05)" : "transparent",
+              border: `1px solid ${on ? c : "var(--line-2)"}`,
+              borderRadius: 8,
+              padding: "6px 10px",
+              cursor: disabled ? "default" : "pointer",
+              opacity: disabled && !on ? 0.5 : 1,
+            }}
+          >
+            <span style={{ color: c, display: "inline-flex" }}>
+              <AgentGlyph type={a.type} size={13} />
+            </span>
+            {a.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ArenaCombatant({ type, name, side, active }: { type: string; name: string; side: "left" | "right"; active: boolean }) {
+  const c = typeColor(type);
+  return (
+    <div style={{ display: "flex", flexDirection: side === "left" ? "row" : "row-reverse", alignItems: "center", gap: 11 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", color: c, background: "rgba(255,255,255,.03)", border: `1px solid ${c}`, boxShadow: active ? `0 0 22px -6px ${c}` : undefined }}>
+        <AgentGlyph type={type} size={20} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: side === "left" ? "flex-start" : "flex-end" }}>
+        <span style={{ fontSize: 14.5, fontWeight: 600 }}>{name}</span>
+        <span style={mono(9.5, "var(--text-faint)", ".08em")}>{type.toUpperCase()}</span>
+      </div>
+    </div>
+  );
+}
+
+function ArenaMessage({ m, left }: { m: ArenaMsg; left: boolean }) {
+  const c = typeColor(m.from_type);
+  return (
+    <div className="rise" style={{ display: "flex", justifyContent: left ? "flex-start" : "flex-end", position: "relative" }}>
+      <div
+        style={{
+          maxWidth: "70%",
+          background: "var(--panel-2)",
+          border: "1px solid var(--line)",
+          borderLeft: left ? `2px solid ${c}` : "1px solid var(--line)",
+          borderRight: left ? "1px solid var(--line)" : `2px solid ${c}`,
+          borderRadius: left ? "4px 12px 12px 12px" : "12px 4px 12px 12px",
+          padding: "10px 13px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 5,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexDirection: left ? "row" : "row-reverse" }}>
+          <span style={{ color: c, display: "inline-flex" }}>
+            <AgentGlyph type={m.from_type} size={12} />
+          </span>
+          <span style={{ ...mono(10.5, c, ".04em"), fontWeight: 600 }}>{m.from}</span>
+          <span style={mono(9.5, "var(--text-faint)")}>→ {m.to}</span>
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)" }}>
+          <Markdown text={m.text} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // minimal inline markdown so **bold**, *italic*, `code` render instead of showing raw
 function renderInline(text: string): (string | JSX.Element)[] {
   const out: (string | JSX.Element)[] = [];

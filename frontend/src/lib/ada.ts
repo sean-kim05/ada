@@ -100,3 +100,40 @@ export function openFleet(onMsg: (m: FleetMsg) => void): () => void {
   ws.onmessage = (msg) => onMsg(JSON.parse(msg.data));
   return () => ws.close();
 }
+
+// One message in an Arena run (agent -> agent).
+export interface ArenaMsg {
+  from: string;
+  to: string;
+  from_type: string;
+  to_type: string;
+  text: string;
+}
+
+// Start an Arena — two agents talk. Streams a MESSAGE per turn; resolves when done.
+export async function startArena(
+  topic: string,
+  agentA: string,
+  agentB: string,
+  rounds: number,
+  onMsg: (m: ArenaMsg) => void,
+): Promise<void> {
+  const resp = await fetch(`${API}/api/arena`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic, agent_a: agentA, agent_b: agentB, rounds }),
+  });
+  const { run_id } = await resp.json();
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`${WS}/api/runs/${run_id}/ws`);
+    ws.onmessage = (msg) => {
+      const e: AgentEvent = JSON.parse(msg.data);
+      if (e.type === "message") onMsg(e.payload as unknown as ArenaMsg);
+      if (e.type === "final" || e.type === "error") {
+        ws.close();
+        resolve();
+      }
+    };
+    ws.onerror = () => resolve();
+  });
+}

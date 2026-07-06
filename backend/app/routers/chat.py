@@ -33,6 +33,13 @@ class SpawnRequest(BaseModel):
     workdir: str | None = None  # claude_code: dir to work in (defaults to sandbox)
 
 
+class ArenaRequest(BaseModel):
+    topic: str
+    agent_a: str = "researcher"
+    agent_b: str = "planner"
+    rounds: int = 3
+
+
 @router.post("/api/chat")
 async def chat(req: ChatRequest) -> dict:
     run = supervisor.start_ada(req.message)
@@ -53,6 +60,14 @@ async def spawn(req: SpawnRequest) -> dict:
         return {"error": f"unknown agent_type: {req.agent_type}"}
     workdir = os.path.abspath(os.path.expanduser(req.workdir)) if req.workdir else None
     run = supervisor.start(req.agent_type, req.prompt, workdir)
+    return {"run_id": run.run_id}
+
+
+@router.post("/api/arena")
+async def arena(req: ArenaRequest) -> dict:
+    if req.agent_a not in registry.SPECS or req.agent_b not in registry.SPECS:
+        return {"error": "unknown agent(s)"}
+    run = supervisor.start_arena(req.topic, req.agent_a, req.agent_b, max(1, min(6, req.rounds)))
     return {"run_id": run.run_id}
 
 

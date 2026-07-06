@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.agents import registry
+from app.agents.arena import run_arena
 from app.agents.claude_code import drive_claude_code
 from app.agents.loop import drive
 from app.config import settings
@@ -80,6 +81,34 @@ class Supervisor:
     def start_ada(self, prompt: str) -> Run:
         """Convenience for the chat surface — the secretary is just agent type 'ada'."""
         return self.start("ada", prompt)
+
+    def start_arena(self, topic: str, a_type: str, b_type: str, rounds: int = 3) -> Run:
+        """Launch an Arena run — two agents talking. One run, MESSAGE events per turn."""
+        for at in (a_type, b_type):
+            if at not in registry.SPECS:
+                raise ValueError(f"unknown agent_type: {at}")
+        run_id = uuid.uuid4().hex[:8]
+        name = f"{registry.SPECS[a_type].name} vs {registry.SPECS[b_type].name}"
+        run = Run(
+            run_id=run_id,
+            agent_type="arena",
+            agent_id=f"arena-{run_id}",
+            name=name,
+            prompt=topic,
+            started_at=time.time(),
+        )
+        self._runs[run_id] = run
+        run.task = asyncio.create_task(self._drive_arena(run, topic, a_type, b_type, rounds))
+        return run
+
+    async def _drive_arena(self, run: Run, topic: str, a_type: str, b_type: str, rounds: int) -> None:
+        emitter = Emitter(run.run_id, run.agent_id)
+        try:
+            await run_arena(emitter, topic, a_type, b_type, rounds)
+            run.status = "done"
+        except Exception as exc:  # noqa: BLE001
+            run.status = "error"
+            await emitter.emit(EventType.ERROR, {"message": str(exc)})
 
     async def _drive(self, run: Run) -> None:
         emitter = Emitter(run.run_id, run.agent_id)
