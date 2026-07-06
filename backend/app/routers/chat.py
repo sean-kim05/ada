@@ -40,6 +40,12 @@ class ArenaRequest(BaseModel):
     rounds: int = 3
 
 
+class MissionRequest(BaseModel):
+    goal: str
+    worker_type: str = "researcher"
+    max_tasks: int = 3
+
+
 @router.post("/api/chat")
 async def chat(req: ChatRequest) -> dict:
     run = supervisor.start_ada(req.message)
@@ -68,6 +74,14 @@ async def arena(req: ArenaRequest) -> dict:
     if req.agent_a not in registry.SPECS or req.agent_b not in registry.SPECS:
         return {"error": "unknown agent(s)"}
     run = supervisor.start_arena(req.topic, req.agent_a, req.agent_b, max(1, min(6, req.rounds)))
+    return {"run_id": run.run_id}
+
+
+@router.post("/api/mission")
+async def mission(req: MissionRequest) -> dict:
+    if req.worker_type not in registry.SPECS or req.worker_type == "ada":
+        return {"error": f"bad worker_type: {req.worker_type}"}
+    run = supervisor.start_mission(req.goal, req.worker_type, max(1, min(5, req.max_tasks)))
     return {"run_id": run.run_id}
 
 

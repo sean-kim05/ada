@@ -16,6 +16,7 @@ from app.agents import registry
 from app.agents.arena import run_arena
 from app.agents.claude_code import drive_claude_code
 from app.agents.loop import drive
+from app.agents.mission import run_mission
 from app.config import settings
 from app.runtime.bus import Emitter
 from app.runtime.events import EventType
@@ -33,6 +34,7 @@ class Run:
     started_at: float
     status: RunStatus = "running"
     workdir: str | None = None  # claude_code: where it works (None → sandbox)
+    result_text: str = ""       # final output, captured for mission synthesis
     task: asyncio.Task | None = field(default=None, repr=False)
 
     def snapshot(self) -> dict:
@@ -110,6 +112,32 @@ class Supervisor:
             run.status = "error"
             await emitter.emit(EventType.ERROR, {"message": str(exc)})
 
+    def start_mission(self, goal: str, worker_type: str = "researcher", max_tasks: int = 3) -> Run:
+        """Launch a Mission — a planner decomposes `goal` and delegates to worker sub-runs."""
+        if worker_type not in registry.SPECS or worker_type == "ada":
+            raise ValueError(f"bad worker_type: {worker_type}")
+        run_id = uuid.uuid4().hex[:8]
+        run = Run(
+            run_id=run_id,
+            agent_type="mission",
+            agent_id=f"mission-{run_id}",
+            name=f"Mission → {registry.SPECS[worker_type].name}",
+            prompt=goal,
+            started_at=time.time(),
+        )
+        self._runs[run_id] = run
+        run.task = asyncio.create_task(self._drive_mission(run, goal, worker_type, max_tasks))
+        return run
+
+    async def _drive_mission(self, run: Run, goal: str, worker_type: str, max_tasks: int) -> None:
+        emitter = Emitter(run.run_id, run.agent_id)
+        try:
+            await run_mission(emitter, goal, worker_type, max_tasks)
+            run.status = "done"
+        except Exception as exc:  # noqa: BLE001
+            run.status = "error"
+            await emitter.emit(EventType.ERROR, {"message": str(exc)})
+
     async def _drive(self, run: Run) -> None:
         emitter = Emitter(run.run_id, run.agent_id)
         try:
@@ -118,10 +146,10 @@ class Supervisor:
                 cwd = run.workdir or settings.sandbox_dir
                 if not os.path.isdir(cwd):
                     raise RuntimeError(f"working dir does not exist: {cwd}")
-                await drive_claude_code(run.prompt, emitter, cwd)
+                run.result_text = await drive_claude_code(run.prompt, emitter, cwd)
             else:
                 agent = registry.build(run.agent_type)
-                await drive(agent, run.prompt, emitter)
+                run.result_text = await drive(agent, run.prompt, emitter)
             run.status = "done"
         except Exception as exc:  # noqa: BLE001 - surface any failure as an event
             run.status = "error"

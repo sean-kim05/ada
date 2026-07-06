@@ -24,6 +24,10 @@ Design docs: `ARCHITECTURE.md`, `ROADMAP.md`. Deck design reference: `Ada-standa
 - **M4** — the Arena: watch two agents talk. One run drives a back-and-forth between two
   personas over a topic (MESSAGE events per turn); the Arena view animates the flow between
   them. Pure conversation on Haiku — and it proves the message-passing plumbing for M5.
+- **M5** — Mission: real multi-agent collaboration. A planner (Atlas) decomposes a goal into
+  subtasks, delegates each to a REAL worker sub-run (shows in the Fleet), collects results,
+  and synthesizes a deliverable. Handoffs are MESSAGE events; the Mission view shows the
+  plan (with per-subtask status), the Atlas↔worker flow, and the final synthesis.
 - Every persona has a distinct **identity** (glyph + colour): Ada=amber spark, Scout=cyan
   lens, Atlas=violet checklist, Forge=green code-brackets — surfaced in Fleet/Arena/launcher.
 
@@ -56,6 +60,10 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 - `agents/arena.py` — the M4 Arena engine: `run_arena(emitter, topic, a_type, b_type, rounds)`
   drives two persona agents turn-by-turn, emitting a MESSAGE event per turn. Supervisor has
   `start_arena()`; endpoint `POST /api/arena`; streams over the normal `/api/runs/{id}/ws`.
+- `agents/mission.py` — the M5 engine: `run_mission(emitter, goal, worker_type, max_tasks)` —
+  planner decomposes, spawns real worker sub-runs via `supervisor.start()` and awaits each
+  (`Run.result_text` captures a run's final output), emits handoff MESSAGE events, synthesizes.
+  Supervisor `start_mission()`; endpoint `POST /api/mission`. Frontend view: `MissionView`.
 - `agents/registry.py` — `SPECS` (personas + tools): `ada`/Ada (secretary + `spawn_agent`),
   `researcher`/Scout (`web_search` + `save_note`), `planner`/Atlas (task tools), and
   `claude_code`/Forge (`driver="claude_code"` → subprocess, not the LLM loop). `AgentSpec.driver`

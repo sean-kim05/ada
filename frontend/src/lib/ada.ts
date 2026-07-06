@@ -137,3 +137,31 @@ export async function startArena(
     ws.onerror = () => resolve();
   });
 }
+
+// Start a Mission — a planner decomposes `goal` and delegates to worker sub-runs. Streams
+// every event of the mission run (plan, message handoffs, final synthesis). Resolves at end.
+export async function startMission(
+  goal: string,
+  workerType: string,
+  maxTasks: number,
+  onEvent: (e: AgentEvent) => void,
+): Promise<void> {
+  const resp = await fetch(`${API}/api/mission`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal, worker_type: workerType, max_tasks: maxTasks }),
+  });
+  const { run_id } = await resp.json();
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`${WS}/api/runs/${run_id}/ws`);
+    ws.onmessage = (msg) => {
+      const e: AgentEvent = JSON.parse(msg.data);
+      onEvent(e);
+      if (e.type === "final" || e.type === "error") {
+        ws.close();
+        resolve();
+      }
+    };
+    ws.onerror = () => resolve();
+  });
+}

@@ -5,6 +5,7 @@ import {
   listAgents,
   openFleet,
   startArena,
+  startMission,
   type AgentEvent,
   type AgentType,
   type RunSnapshot,
@@ -122,6 +123,12 @@ const ICONS: Record<string, JSX.Element> = {
       <path d="M10.4 12h3.2" />
     </>
   ),
+  Mission: (
+    <>
+      <path d="M5 21V4h11l-2 3.5L16 11H5" />
+      <circle cx="5" cy="21" r="0.6" />
+    </>
+  ),
 };
 const NavIcon = ({ name }: { name: string }) => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -205,6 +212,7 @@ const NAV = [
   { name: "Agent Trace", view: "deck" as const },
   { name: "Fleet", view: "fleet" as const },
   { name: "Arena", view: "arena" as const },
+  { name: "Mission", view: "mission" as const },
   { name: "Calendar", view: "deck" as const },
   { name: "Tasks", view: "deck" as const },
   { name: "Docs", view: "deck" as const, pill: "RAG" },
@@ -245,7 +253,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [tasks, setTasks] = useState(INITIAL_TASKS);
   const [newTask, setNewTask] = useState("");
-  const [view, setView] = useState<"deck" | "fleet" | "arena">("deck");
+  const [view, setView] = useState<"deck" | "fleet" | "arena" | "mission">("deck");
   const [fleet, setFleet] = useState<Record<string, FleetRun>>({});
   const [agentTypes, setAgentTypes] = useState<AgentType[]>([]);
   const [focused, setFocused] = useState<string | null>(null);
@@ -543,8 +551,10 @@ export default function App() {
             setLaunchDir={setLaunchDir}
             clock={clock}
           />
-        ) : (
+        ) : view === "arena" ? (
           <ArenaView agentTypes={agentTypes} />
+        ) : (
+          <MissionView agentTypes={agentTypes} />
         )}
       </main>
     </div>
@@ -1289,6 +1299,160 @@ function ArenaMessage({ m, left }: { m: ArenaMsg; left: boolean }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── mission (M5) — planner decomposes → delegates → synthesizes ── */
+function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
+  const [goal, setGoal] = useState("");
+  const [worker, setWorker] = useState("researcher");
+  const [events, setEvents] = useState<AgentEvent[]>([]);
+  const [running, setRunning] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [events.length]);
+
+  const start = async () => {
+    const g = goal.trim();
+    if (!g || running) return;
+    setEvents([]);
+    setRunning(true);
+    await startMission(g, worker, 3, (e) => setEvents((prev) => [...prev, e]));
+    setRunning(false);
+  };
+
+  const plan = events.find((e) => e.type === "plan");
+  const tasks = (plan?.payload.tasks as string[] | undefined) ?? [];
+  const handoffs = events.filter(
+    (e) => e.type === "message" && e.payload.from_type !== e.payload.to_type,
+  );
+  const done = events.filter(
+    (e) => e.type === "message" && e.payload.from_type !== "planner",
+  ).length;
+  const final = events.find((e) => e.type === "final");
+  const workerName = agentTypes.find((a) => a.type === worker)?.name ?? worker;
+  const SAMPLES = [
+    "Plan a weekend launch of an AI note-taking app",
+    "Research and outline a blog post on RAG",
+    "Scope an MVP for a habit tracker",
+  ];
+
+  return (
+    <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
+      <div style={{ ...panel, flex: 1 }}>
+        <div style={phead}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={mono(11, "var(--text)", ".16em")}>MISSION</span>
+            <span style={tagStyle(running ? "accent" : undefined)}>
+              {running ? "RUNNING" : final ? "DONE" : "M5 · PLANNER DELEGATES"}
+            </span>
+          </div>
+          <span style={mono(10, "var(--text-faint)")}>{tasks.length ? `${Math.min(done, tasks.length)}/${tasks.length} subtasks` : ""}</span>
+        </div>
+
+        {/* launcher */}
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={mono(10.5, "var(--text-faint)", ".08em")}>ATLAS DELEGATES TO</span>
+            <ArenaPicker agentTypes={agentTypes.filter((a) => a.type !== "ada")} value={worker} onPick={setWorker} disabled={running} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              className="bare"
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && start()}
+              placeholder="A goal to accomplish…"
+              style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "10px 13px", color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13 }}
+            />
+            <button
+              className="btn-accent"
+              onClick={start}
+              disabled={running}
+              style={{ ...mono(11, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 9, padding: "0 20px", cursor: running ? "default" : "pointer", opacity: running ? 0.5 : 1 }}
+            >
+              RUN
+            </button>
+          </div>
+          {events.length === 0 && !running && (
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+              {SAMPLES.map((s) => (
+                <button key={s} className="btn-ghost" onClick={() => setGoal(s)} style={{ ...mono(10.5, "var(--text-dim)"), background: "transparent", border: "1px solid var(--line)", borderRadius: 20, padding: "5px 12px", cursor: "pointer" }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {events.length === 0 && !running && (
+            <div style={{ ...mono(12, "var(--text-faint)"), textAlign: "center", marginTop: 34 }}>
+              Give Atlas a goal — it breaks it into subtasks, delegates each to a {workerName}, and synthesizes the result.
+            </div>
+          )}
+
+          {/* plan */}
+          {tasks.length > 0 && (
+            <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 11, padding: "13px 15px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 11 }}>
+                <span style={{ color: typeColor("planner"), display: "inline-flex" }}>
+                  <AgentGlyph type="planner" size={15} />
+                </span>
+                <span style={mono(10.5, "var(--text-dim)", ".1em")}>ATLAS · PLAN</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {tasks.map((t, i) => {
+                  const st = i < done ? "done" : i === done && running ? "running" : "pending";
+                  const c = st === "done" ? typeColor("planner") : st === "running" ? "var(--accent)" : "var(--text-faint)";
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                      <span style={{ marginTop: 1, width: 16, height: 16, flex: "none", borderRadius: "50%", border: `1px solid ${c}`, background: st === "done" ? c : "transparent", display: "grid", placeItems: "center" }}>
+                        {st === "done" && (
+                          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="#0c0e11" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M2.5 6.2 5 8.6 9.5 3.6" />
+                          </svg>
+                        )}
+                        {st === "running" && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: "adaBlink 1.1s infinite" }} />}
+                      </span>
+                      <span style={{ fontSize: 12.5, lineHeight: 1.45, color: st === "pending" ? "var(--text-dim)" : "var(--text)" }}>{t}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* handoffs */}
+          {handoffs.map((m, i) => (
+            <ArenaMessage key={i} m={m.payload as unknown as ArenaMsg} left={m.payload.from_type === "planner"} />
+          ))}
+
+          {/* synthesis */}
+          {final && (
+            <div style={{ background: "linear-gradient(180deg, rgba(var(--accent-rgb),.06), transparent 82%)", border: "1px solid rgba(var(--accent-rgb),.3)", borderRadius: 11, padding: "13px 15px", display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={{ ...tagStyle("accent"), alignSelf: "flex-start" }}>SYNTHESIS</span>
+              <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
+                <Markdown text={String(final.payload.text ?? "")} />
+              </div>
+            </div>
+          )}
+
+          {running && !final && (
+            <div style={{ textAlign: "center", padding: "4px 0" }}>
+              <span style={{ display: "inline-flex", gap: 4 }}>
+                {[0, 0.18, 0.36].map((d, i) => (
+                  <span key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: `adaType 1.2s ${d}s infinite` }} />
+                ))}
+              </span>
+            </div>
+          )}
+          <div ref={endRef} />
+        </div>
+      </div>
+    </section>
   );
 }
 
