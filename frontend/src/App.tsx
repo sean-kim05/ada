@@ -761,8 +761,17 @@ const chip: CSSProperties = {
   cursor: "pointer",
 };
 function accentColor(a?: string): string {
-  return a === "cyan" ? "#5ec7d6" : a === "violet" ? "#a68bf0" : "var(--accent)";
+  return a === "cyan" ? "#5ec7d6" : a === "violet" ? "#a68bf0" : a === "green" ? "#7fd88f" : "var(--accent)";
 }
+// colour per Claude-Code output stream, for the Terminal panel
+const STREAM_COLORS: Record<string, string> = {
+  cmd: "var(--accent)",
+  system: "var(--text-faint)",
+  assistant: "var(--text)",
+  tool: "#7fd88f",
+  result: "var(--text-dim)",
+  stderr: "var(--red)",
+};
 
 interface FleetProps {
   fleet: Record<string, FleetRun>;
@@ -777,6 +786,7 @@ interface FleetProps {
   clock: number;
 }
 function FleetView(p: FleetProps) {
+  const [tab, setTab] = useState<"trace" | "terminal">("trace");
   const runs = Object.entries(p.fleet)
     .map(([id, r]) => ({ id, ...r }))
     .sort((a, b) => {
@@ -789,6 +799,11 @@ function FleetView(p: FleetProps) {
   const focusId = p.focused ?? runs[0]?.id ?? null;
   const focusRun = focusId ? p.fleet[focusId] : null;
   const launchName = p.agentTypes.find((a) => a.type === p.launchType)?.name ?? "agent";
+  // auto-show the Terminal for coding agents, the Trace for the rest
+  const isCoder = focusRun?.meta?.agent_type === "claude_code";
+  useEffect(() => {
+    setTab(isCoder ? "terminal" : "trace");
+  }, [focusId, isCoder]);
 
   return (
     <section style={{ display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
@@ -850,20 +865,44 @@ function FleetView(p: FleetProps) {
 
       <div style={{ ...panel, boxShadow: "inset 0 1px 0 rgba(255,255,255,.03), 0 1px 2px rgba(0,0,0,.45), 0 0 40px -20px rgba(var(--accent-rgb),.3)" }}>
         <div style={phead}>
-          <span style={mono(11, "var(--text)", ".16em")}>AGENT TRACE</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {(["trace", "terminal"] as const).map((tb) => (
+              <span
+                key={tb}
+                onClick={() => setTab(tb)}
+                style={{
+                  ...mono(11, tab === tb ? "var(--text)" : "var(--text-faint)", ".16em"),
+                  cursor: "pointer",
+                  padding: "3px 9px",
+                  borderRadius: 6,
+                  background: tab === tb ? "rgba(255,255,255,.05)" : "transparent",
+                }}
+              >
+                {tb === "trace" ? "TRACE" : "TERMINAL"}
+              </span>
+            ))}
+          </div>
           {focusRun?.meta && (
             <span style={mono(10, "var(--text-faint)")}>
               {focusRun.meta.name} · {focusId}
             </span>
           )}
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "18px 16px", display: "flex", flexDirection: "column" }}>
-          {!focusRun && <div style={{ ...mono(12, "var(--text-faint)"), padding: "8px 2px" }}>Select an agent to watch its live trace.</div>}
-          {focusRun && focusRun.events.length === 0 && (
-            <div style={{ ...mono(12, "var(--text-faint)"), padding: "8px 2px" }}>No steps captured yet — the agent is warming up.</div>
-          )}
-          {focusRun && focusRun.events.map((e, i) => <TraceRow key={i} e={e} last={i === focusRun.events.length - 1} />)}
-        </div>
+        {tab === "terminal" ? (
+          focusRun ? (
+            <TerminalPanel run={focusRun} />
+          ) : (
+            <div style={{ flex: 1, ...mono(12, "var(--text-faint)"), padding: "18px 16px" }}>Select an agent to watch its terminal.</div>
+          )
+        ) : (
+          <div style={{ flex: 1, overflowY: "auto", padding: "18px 16px", display: "flex", flexDirection: "column" }}>
+            {!focusRun && <div style={{ ...mono(12, "var(--text-faint)"), padding: "8px 2px" }}>Select an agent to watch its live trace.</div>}
+            {focusRun && focusRun.events.filter((e) => e.type !== "log").length === 0 && (
+              <div style={{ ...mono(12, "var(--text-faint)"), padding: "8px 2px" }}>No steps captured yet — the agent is warming up.</div>
+            )}
+            {focusRun && focusRun.events.map((e, i) => <TraceRow key={i} e={e} last={i === focusRun.events.length - 1} />)}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -871,7 +910,12 @@ function FleetView(p: FleetProps) {
 
 function FleetCard({ id, run, focused, onClick, clock }: { id: string; run: FleetRun; focused: boolean; onClick: () => void; clock: number }) {
   const meta = run.meta;
-  const accent = accentColor(meta?.agent_type === "researcher" ? "cyan" : meta?.agent_type === "planner" ? "violet" : "amber");
+  const accent = accentColor(
+    meta?.agent_type === "researcher" ? "cyan"
+      : meta?.agent_type === "planner" ? "violet"
+      : meta?.agent_type === "claude_code" ? "green"
+      : "amber",
+  );
   const sc = run.status === "running" ? "var(--accent)" : run.status === "error" ? "var(--red)" : "var(--text-dim)";
   const elapsed = meta ? Math.max(0, Math.floor(clock - meta.started_at)) : 0;
   return (
@@ -898,6 +942,38 @@ function FleetCard({ id, run, focused, onClick, clock }: { id: string; run: Flee
       {run.lastStep && (
         <div style={{ ...mono(10.5, run.status === "running" ? "var(--accent)" : "var(--text-faint)"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{run.lastStep}</div>
       )}
+    </div>
+  );
+}
+
+// The Terminal panel (M3) — renders a claude_code run's raw `log` stream like a console.
+function TerminalPanel({ run }: { run: FleetRun }) {
+  const logs = run.events.filter((e) => e.type === "log");
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView();
+  }, [logs.length]);
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px", background: "#07090d", borderRadius: "0 0 13px 13px" }}>
+      {logs.length === 0 && <div style={mono(11.5, "var(--text-faint)")}>waiting for output…</div>}
+      {logs.map((e, i) => (
+        <div
+          key={i}
+          style={{
+            ...mono(11.5, STREAM_COLORS[String(e.payload.stream ?? "")] ?? "var(--text-dim)"),
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            padding: "1px 0",
+            lineHeight: 1.55,
+          }}
+        >
+          {String(e.payload.line ?? "")}
+        </div>
+      ))}
+      {run.status === "running" && (
+        <span style={{ display: "inline-block", width: 7, height: 14, marginTop: 4, background: "var(--accent)", animation: "adaCursor 1.1s steps(1) infinite" }} />
+      )}
+      <div ref={endRef} />
     </div>
   );
 }

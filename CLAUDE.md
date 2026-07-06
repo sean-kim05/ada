@@ -18,8 +18,12 @@ Design docs: `ARCHITECTURE.md`, `ROADMAP.md`. Deck design reference: `Ada-standa
 - **M1** — secretary loop (Chat + live Agent Trace). Real backend, works end-to-end.
 - **M2** — multi-agent Fleet. Runs any agent type concurrently; Fleet view shows a live
   card per agent, a launcher, and click-to-focus trace.
+- **M3** — `claude_code` agent ("Forge"): Ada delegates real coding to Claude Code running
+  headless as a subprocess, sandboxed to `sandbox/`, streamed live into a Terminal panel.
+  Runs on the **Max plan** (no API key, no per-token billing).
 
-Both run on Haiku today. Deck's Calendar / To-do / Reminders are still **demo data** (M1 tail).
+M1/M2 brains run on Haiku; M3 runs the `claude` CLI's default model (Opus). Deck's
+Calendar / To-do / Reminders are still **demo data** (M1 tail).
 
 ## Run it
 
@@ -40,14 +44,19 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 
 ## Backend layout (`backend/app/`)
 
-- `agents/loop.py` — generic `drive(agent, prompt, emitter)` loop used by **every** agent.
+- `agents/loop.py` — generic `drive(agent, prompt, emitter)` loop used by every **LLM** agent.
+- `agents/claude_code.py` — the M3 driver: subprocesses `claude -p --output-format stream-json`,
+  parses its events, and re-emits them as our AgentEvents (LOG drives the Terminal; tool_use/
+  tool_result drive the trace; result → FINAL). Emits FINAL on success, raises on failure.
 - `agents/registry.py` — `SPECS` (personas + tools): `ada`/Ada (secretary + `spawn_agent`),
-  `researcher`/Scout (`web_search` + `save_note`), `planner`/Atlas (task tools). `build(type)`
-  makes a fresh agent.
+  `researcher`/Scout (`web_search` + `save_note`), `planner`/Atlas (task tools), and
+  `claude_code`/Forge (`driver="claude_code"` → subprocess, not the LLM loop). `AgentSpec.driver`
+  picks the path; `build(type)` makes a fresh Pydantic-AI agent for `driver="llm"` only.
 - `tools/` — `spawn.py` (`spawn_agent`, late-imports supervisor to dodge a cycle),
   `research.py` (`web_search` **STUB** + `save_note`), `tasks.py`.
 - `runtime/supervisor.py` — `Supervisor.start(type, prompt)` launches concurrent runs;
-  `Run.snapshot()`; `start_ada()` = the chat entrypoint.
+  `Run.snapshot()`; `start_ada()` = the chat entrypoint. `_drive` branches on `spec.driver`
+  (LLM loop vs `drive_claude_code`).
 - `runtime/bus.py` — Redis pub/sub; `subscribe_all()` (psubscribe `ada:run:*`) = the fleet feed.
 - `runtime/events.py` — `AgentEvent` schema (keep `frontend/src/lib/ada.ts` in sync).
 - `routers/chat.py` — `POST /api/chat` (secretary), `POST /api/agents/spawn`, `GET /api/agents`,
@@ -59,6 +68,8 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 - `src/lib/ada.ts` — API/WS client: `startRun`, `spawnAgent`, `listAgents`, `openFleet`.
   Mirrors the backend `AgentEvent` — keep the two in sync.
 - `src/App.tsx` — view switch (deck ↔ fleet), always-on fleet feed, `FleetView`/`FleetCard`.
+  Fleet right pane has a **TRACE / TERMINAL** toggle; `TerminalPanel` renders a run's `log`
+  stream console-style (auto-selected for `claude_code` runs, colored by `payload.stream`).
 - Theme: **"ADA · Agent OS Terminal"**, punch-card gold-"A" logo (`PunchA` SVG + `A_BITS`
   matrix), IBM Plex Sans/Mono/Serif, dark bluish palette + amber `rgb(234,158,70)`.
   Global `#root { zoom: 1.5 }` scales the deck up for large monitors.
@@ -78,6 +89,21 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 - **API key** lives in `backend/.env` (`ANTHROPIC_API_KEY`, gitignored). This is a pay-per-token
   Anthropic API key for Ada's *own brain* — separate from Sean's Claude Max plan. `config.py`
   reads `.env` relative to cwd, so **run uvicorn from `backend/`**.
+
+## M3 — the claude_code agent (Forge)
+
+- Config knobs (`config.py`): `claude_bin` (default `claude` on PATH), `claude_code_model`
+  (`""` = CLI default = Opus; set to pin a cheaper model for iteration), `sandbox_dir`
+  (default `<repo>/sandbox`, a throwaway git repo — the blast radius).
+- Invoked as: `claude -p <prompt> --output-format stream-json --verbose
+  --dangerously-skip-permissions [--model …]`, `cwd=sandbox_dir`, `stdin=DEVNULL` (skips the
+  CLI's 3s "no stdin" wait). Skip-permissions is acceptable **because** it's sandbox-scoped.
+- `stream-json` shapes we parse: `system/init` (model, cwd), `assistant` (content blocks:
+  `text` / `tool_use` / `thinking`-ignored), `user` (`tool_result` blocks), `result`
+  (`result` text, `total_cost_usd`, `usage`, `is_error`). `rate_limit_event` ignored.
+- Cost: the `total_cost_usd` we surface is the **would-be** API cost — on Max it is NOT billed.
+- Ada can delegate to it via `spawn_agent("claude_code", task)` — this is the M3 magic
+  ("Ada tells Claude Code to code"). Launchable directly from the Fleet too.
 
 ## Pydantic AI note (bit us once)
 

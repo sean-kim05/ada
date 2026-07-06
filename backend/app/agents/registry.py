@@ -43,6 +43,7 @@ class AgentSpec:
     accent: str  # UI colour hint for the Fleet card
     instructions: str
     tools: list[Callable]
+    driver: str = "llm"  # "llm" = Pydantic-AI loop; "claude_code" = headless CLI subprocess
 
 
 SPECS: dict[str, AgentSpec] = {
@@ -58,12 +59,21 @@ SPECS: dict[str, AgentSpec] = {
         "planner", "Atlas", "Planner — breaks goals into tasks", "violet",
         PLANNER_INSTR, list(_TASK_TOOLS),
     ),
+    # M3: real coding, delegated to Claude Code (runs on the Max plan, sandboxed).
+    "claude_code": AgentSpec(
+        "claude_code", "Forge", "Engineer — writes code via Claude Code", "green",
+        "", [], driver="claude_code",
+    ),
 }
 
 
 def build(agent_type: str) -> Agent:
-    """Construct a fresh agent for one run. Fresh per run keeps runs isolated."""
+    """Construct a fresh Pydantic-AI agent for one run. Fresh per run keeps runs isolated.
+    Not used for subprocess drivers (e.g. claude_code) — the supervisor branches on
+    spec.driver before calling this."""
     spec = SPECS[agent_type]
+    if spec.driver != "llm":
+        raise ValueError(f"{agent_type} uses the '{spec.driver}' driver, not the LLM loop")
     agent = Agent(claude_model(), instructions=spec.instructions)
     for tool in spec.tools:
         agent.tool_plain(tool)

@@ -11,3 +11,6 @@ frontend/dist/
 .DS_Store
 # windows / wsl clutter
 *:Zone.Identifier
+
+# claude_code agent workspace
+sandbox/

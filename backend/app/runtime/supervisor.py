@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.agents import registry
+from app.agents.claude_code import drive_claude_code
 from app.agents.loop import drive
+from app.config import settings
 from app.runtime.bus import Emitter
 from app.runtime.events import EventType
 
@@ -77,8 +79,12 @@ class Supervisor:
     async def _drive(self, run: Run) -> None:
         emitter = Emitter(run.run_id, run.agent_id)
         try:
-            agent = registry.build(run.agent_type)
-            await drive(agent, run.prompt, emitter)
+            spec = registry.SPECS[run.agent_type]
+            if spec.driver == "claude_code":
+                await drive_claude_code(run.prompt, emitter, settings.sandbox_dir)
+            else:
+                agent = registry.build(run.agent_type)
+                await drive(agent, run.prompt, emitter)
             run.status = "done"
         except Exception as exc:  # noqa: BLE001 - surface any failure as an event
             run.status = "error"
