@@ -94,7 +94,11 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 
 - Config knobs (`config.py`): `claude_bin` (default `claude` on PATH), `claude_code_model`
   (`""` = CLI default = Opus; set to pin a cheaper model for iteration), `sandbox_dir`
-  (default `<repo>/sandbox`, a throwaway git repo — the blast radius).
+  (default `<repo>/sandbox`, a throwaway git repo — the default blast radius).
+- **Per-run `workdir`**: a run can target ANY existing dir (spawn API `workdir`, `spawn_agent`
+  tool `workdir`, or the Fleet launcher DIR field) — defaults to the sandbox, validated to
+  exist. This is what makes Forge usable for real work (build in `~/dev/mysite`, contribute
+  to a cloned OSS repo, etc.). Runs one-shot today; session-resume for follow-ups is TODO.
 - Invoked as: `claude -p <prompt> --output-format stream-json --verbose
   --dangerously-skip-permissions [--model …]`, `cwd=sandbox_dir`, `stdin=DEVNULL` (skips the
   CLI's 3s "no stdin" wait). Skip-permissions is acceptable **because** it's sandbox-scoped.
