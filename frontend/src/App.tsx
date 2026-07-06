@@ -195,6 +195,7 @@ export default function App() {
   const [focused, setFocused] = useState<string | null>(null);
   const [launchType, setLaunchType] = useState("researcher");
   const [launchPrompt, setLaunchPrompt] = useState("");
+  const [launchDir, setLaunchDir] = useState("");
   const [clock, setClock] = useState(() => Date.now() / 1000);
   const chatEnd = useRef<HTMLDivElement>(null);
   const traceEnd = useRef<HTMLDivElement>(null);
@@ -238,7 +239,7 @@ export default function App() {
     const p = launchPrompt.trim();
     if (!p) return;
     setLaunchPrompt("");
-    const id = await spawnAgent(launchType, p);
+    const id = await spawnAgent(launchType, p, launchDir.trim() || undefined);
     setFocused(id);
   };
 
@@ -482,6 +483,8 @@ export default function App() {
             setLaunchType={setLaunchType}
             launchPrompt={launchPrompt}
             setLaunchPrompt={setLaunchPrompt}
+            launchDir={launchDir}
+            setLaunchDir={setLaunchDir}
             clock={clock}
           />
         )}
@@ -518,7 +521,7 @@ function Message({ msg }: { msg: ChatMsg }) {
           <span style={{ fontSize: 12.5, fontWeight: 600 }}>Ada</span>
           {msg.time && <span style={mono(10, "var(--text-faint)")}>{msg.time}</span>}
         </div>
-        <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: "4px 12px 12px 12px", padding: "11px 13px", fontSize: 13.5, lineHeight: 1.5, color: "var(--text)" }}>{msg.text}</div>
+        <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: "4px 12px 12px 12px", padding: "11px 13px", fontSize: 13.5, lineHeight: 1.5, color: "var(--text)" }}><Markdown text={msg.text} /></div>
       </div>
     </div>
   );
@@ -579,7 +582,7 @@ function TraceRow({ e, last }: { e: AgentEvent; last: boolean }) {
           <span style={{ flex: 1 }} />
           <span style={modelBadge}>CLAUDE</span>
         </div>
-        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)" }}>{String(e.payload.text ?? "")}</div>
+        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)" }}><Markdown text={String(e.payload.text ?? "")} /></div>
       </div>
     );
   } else if (kind === "error") {
@@ -783,6 +786,8 @@ interface FleetProps {
   setLaunchType: (t: string) => void;
   launchPrompt: string;
   setLaunchPrompt: (v: string) => void;
+  launchDir: string;
+  setLaunchDir: (v: string) => void;
   clock: number;
 }
 function FleetView(p: FleetProps) {
@@ -850,6 +855,19 @@ function FleetView(p: FleetProps) {
               LAUNCH
             </button>
           </div>
+          {p.launchType === "claude_code" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={mono(10, "var(--text-faint)", ".08em")}>DIR</span>
+              <input
+                className="bare"
+                value={p.launchDir}
+                onChange={(e) => p.setLaunchDir(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && p.onLaunch()}
+                placeholder="working dir — optional, defaults to sandbox (e.g. ~/dev/mysite)"
+                style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "8px 12px", color: "var(--text)", fontFamily: "var(--mono)", fontSize: 11.5 }}
+              />
+            </div>
+          )}
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(228px,1fr))", gap: 12, alignContent: "start" }}>
           {runs.length === 0 && (
@@ -1007,6 +1025,46 @@ function reduceFleet(prev: Record<string, FleetRun>, m: FleetMsg): Record<string
 }
 
 /* ── helpers ───────────────────────────────── */
+// minimal inline markdown so **bold**, *italic*, `code` render instead of showing raw
+function renderInline(text: string): (string | JSX.Element)[] {
+  const out: (string | JSX.Element)[] = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*)/g;
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) {
+      out.push(<strong key={k++} style={{ fontWeight: 600, color: "var(--text)" }}>{tok.slice(2, -2)}</strong>);
+    } else if (tok.startsWith("`")) {
+      out.push(
+        <code key={k++} style={{ fontFamily: "var(--mono)", fontSize: "0.9em", background: "rgba(255,255,255,.06)", border: "1px solid var(--line)", borderRadius: 4, padding: "1px 5px" }}>
+          {tok.slice(1, -1)}
+        </code>,
+      );
+    } else {
+      out.push(<em key={k++}>{tok.slice(1, -1)}</em>);
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function Markdown({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <>
+      {lines.map((ln, i) => (
+        <span key={i}>
+          {renderInline(ln)}
+          {i < lines.length - 1 && <br />}
+        </span>
+      ))}
+    </>
+  );
+}
+
 function fmt(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "string") return v;

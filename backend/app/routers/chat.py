@@ -10,6 +10,8 @@ WS   /api/fleet/ws      -> stream EVERY run's events at once (the Fleet feed)
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -28,6 +30,7 @@ class ChatRequest(BaseModel):
 class SpawnRequest(BaseModel):
     agent_type: str
     prompt: str
+    workdir: str | None = None  # claude_code: dir to work in (defaults to sandbox)
 
 
 @router.post("/api/chat")
@@ -48,7 +51,8 @@ async def agent_types() -> list[dict]:
 async def spawn(req: SpawnRequest) -> dict:
     if req.agent_type not in registry.SPECS:
         return {"error": f"unknown agent_type: {req.agent_type}"}
-    run = supervisor.start(req.agent_type, req.prompt)
+    workdir = os.path.abspath(os.path.expanduser(req.workdir)) if req.workdir else None
+    run = supervisor.start(req.agent_type, req.prompt, workdir)
     return {"run_id": run.run_id}
 
 

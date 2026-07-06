@@ -82,12 +82,13 @@ export async function listAgents(): Promise<AgentType[]> {
   return r.json();
 }
 
-// Launch any agent type on a prompt. Returns the new run id.
-export async function spawnAgent(agentType: string, prompt: string): Promise<string> {
+// Launch any agent type on a prompt. Returns the new run id. `workdir` (optional) is the
+// directory a claude_code agent works in — defaults to the sandbox on the backend.
+export async function spawnAgent(agentType: string, prompt: string, workdir?: string): Promise<string> {
   const r = await fetch(`${API}/api/agents/spawn`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agent_type: agentType, prompt }),
+    body: JSON.stringify({ agent_type: agentType, prompt, workdir: workdir || null }),
   });
   const j = await r.json();
   return j.run_id;

@@ -6,6 +6,7 @@ stream."""
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ class Run:
     prompt: str
     started_at: float
     status: RunStatus = "running"
+    workdir: str | None = None  # claude_code: where it works (None → sandbox)
     task: asyncio.Task | None = field(default=None, repr=False)
 
     def snapshot(self) -> dict:
@@ -41,6 +43,7 @@ class Run:
             "prompt": self.prompt,
             "status": self.status,
             "started_at": self.started_at,
+            "workdir": self.workdir,
         }
 
 
@@ -54,8 +57,9 @@ class Supervisor:
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
 
-    def start(self, agent_type: str, prompt: str) -> Run:
-        """Launch `agent_type` on `prompt` as a background run. Returns immediately."""
+    def start(self, agent_type: str, prompt: str, workdir: str | None = None) -> Run:
+        """Launch `agent_type` on `prompt` as a background run. Returns immediately.
+        `workdir` (claude_code only) is the directory the agent works in."""
         if agent_type not in registry.SPECS:
             raise ValueError(f"unknown agent_type: {agent_type}")
         run_id = uuid.uuid4().hex[:8]
@@ -67,6 +71,7 @@ class Supervisor:
             name=spec.name,
             prompt=prompt,
             started_at=time.time(),
+            workdir=workdir,
         )
         self._runs[run_id] = run
         run.task = asyncio.create_task(self._drive(run))
@@ -81,7 +86,10 @@ class Supervisor:
         try:
             spec = registry.SPECS[run.agent_type]
             if spec.driver == "claude_code":
-                await drive_claude_code(run.prompt, emitter, settings.sandbox_dir)
+                cwd = run.workdir or settings.sandbox_dir
+                if not os.path.isdir(cwd):
+                    raise RuntimeError(f"working dir does not exist: {cwd}")
+                await drive_claude_code(run.prompt, emitter, cwd)
             else:
                 agent = registry.build(run.agent_type)
                 await drive(agent, run.prompt, emitter)
