@@ -6,6 +6,7 @@ route work off Claude. The router logs which model handled what so cost/latency 
 from __future__ import annotations
 
 import httpx
+from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
@@ -18,6 +19,14 @@ def claude_model() -> AnthropicModel:
         settings.claude_model,
         provider=AnthropicProvider(api_key=settings.anthropic_api_key),
     )
+
+
+async def cloud_complete(prompt: str, *, system: str | None = None) -> str:
+    """One-shot completion on cloud Claude — the paid brain. The router falls back to this
+    for work the local model isn't trusted to handle. Returns the raw text."""
+    agent = Agent(claude_model(), instructions=system or "")
+    result = await agent.run(prompt)
+    return result.output
 
 
 async def local_complete(prompt: str, *, system: str | None = None) -> str:
