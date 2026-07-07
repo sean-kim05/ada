@@ -1,11 +1,27 @@
 import { useState, useRef, useEffect, type CSSProperties } from "react";
 import {
   startRun,
+  steerRun,
   spawnAgent,
   listAgents,
   openFleet,
   startArena,
   startMission,
+  listTasks,
+  addTask,
+  setTaskDone,
+  getCalendar,
+  listMemories,
+  searchMemory,
+  addMemory,
+  deleteMemory,
+  getRouterStats,
+  getRouterHealth,
+  type Task,
+  type CalState,
+  type Memory,
+  type RouterStats,
+  type RouterHealth,
   type AgentEvent,
   type AgentType,
   type RunSnapshot,
@@ -123,6 +139,14 @@ const ICONS: Record<string, JSX.Element> = {
       <path d="M10.4 12h3.2" />
     </>
   ),
+  Router: (
+    <>
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="19" cy="6" r="2" />
+      <circle cx="19" cy="18" r="2" />
+      <path d="M7 12l6-4.5a3 3 0 011.8-.6h2.4M7 12l6 4.5a3 3 0 001.8.6h2.4" />
+    </>
+  ),
   Mission: (
     <>
       <path d="M5 21V4h11l-2 3.5L16 11H5" />
@@ -215,28 +239,28 @@ const NAV = [
   { name: "Mission", view: "mission" as const },
   { name: "Calendar", view: "deck" as const },
   { name: "Tasks", view: "deck" as const },
-  { name: "Docs", view: "deck" as const, pill: "RAG" },
+  { name: "Docs", view: "docs" as const, pill: "RAG" },
+  { name: "Router", view: "router" as const, pill: "LOCAL" },
 ];
 
-/* ── demo data for the side panels (wired to real tools later) ── */
-const HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
-const CAL_EVENTS = [
-  { top: 30, height: 34, time: "09:30", title: "Standup", kind: "dim" as const },
-  { top: 90, height: 34, time: "11:00", title: "1:1 · Priya", kind: "dim" as const },
-  { top: 290, height: 34, time: "16:00", title: "Design Sync", kind: "accent" as const, was: "was 15:00" },
-  { top: 330, height: 40, time: "17:00", title: "Focus block", kind: "normal" as const },
+/* ── accent themes (swaps --accent-rgb at the root) ── */
+const ACCENTS: { key: string; rgb: string }[] = [
+  { key: "mono", rgb: "250,250,250" },
+  { key: "amber", rgb: "234,158,70" },
+  { key: "gold", rgb: "216,180,96" },
+  { key: "coral", rgb: "233,124,92" },
+  { key: "cyan", rgb: "61,214,230" },
+  { key: "violet", rgb: "150,134,240" },
+  { key: "emerald", rgb: "74,198,150" },
 ];
+
+/* ── side-panel scaffolding — HOURS drives the Calendar day grid ── */
+const HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
 const REMINDERS = [
   { text: "Call the dentist", when: "2:00 PM", active: true },
   { text: "Renew ada.computer domain", when: "TMRW" },
   { text: "Sarah's birthday", when: "FRI" },
 ];
-const INITIAL_TASKS = [
-  { text: "Reply to Priya about specs", due: "2 PM", done: false },
-  { text: "Prep for the Joby panel", due: "Today", done: false },
-  { text: "Review Q3 roadmap draft", due: "Wed", done: true },
-];
-
 const GREETING: ChatMsg = {
   role: "ada",
   text:
@@ -251,9 +275,14 @@ export default function App() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [tasks, setTasks] = useState(INITIAL_TASKS);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [newTask, setNewTask] = useState("");
-  const [view, setView] = useState<"deck" | "fleet" | "arena" | "mission">("deck");
+  const [cal, setCal] = useState<CalState>({ authorized: false, events: [] });
+  const [routerStats, setRouterStats] = useState<RouterStats | null>(null);
+  const refreshTasks = () => listTasks().then(setTasks).catch(() => {});
+  const refreshCal = () => getCalendar().then(setCal).catch(() => {});
+  const [view, setView] = useState<"deck" | "fleet" | "arena" | "mission" | "docs" | "router">("deck");
   const [fleet, setFleet] = useState<Record<string, FleetRun>>({});
   const [agentTypes, setAgentTypes] = useState<AgentType[]>([]);
   const [focused, setFocused] = useState<string | null>(null);
@@ -261,8 +290,21 @@ export default function App() {
   const [launchPrompt, setLaunchPrompt] = useState("");
   const [launchDir, setLaunchDir] = useState("");
   const [clock, setClock] = useState(() => Date.now() / 1000);
+  const [accent, setAccent] = useState<string>(() => localStorage.getItem("ada.accent") || "mono");
+  const [grid, setGrid] = useState<boolean>(() => localStorage.getItem("ada.grid") !== "0");
   const chatEnd = useRef<HTMLDivElement>(null);
   const traceEnd = useRef<HTMLDivElement>(null);
+
+  // theme: swap the accent (and dot-grid) at the root so every view follows
+  useEffect(() => {
+    const rgb = ACCENTS.find((a) => a.key === accent)?.rgb ?? "250,250,250";
+    document.documentElement.style.setProperty("--accent-rgb", rgb);
+    localStorage.setItem("ada.accent", accent);
+  }, [accent]);
+  useEffect(() => {
+    document.documentElement.style.setProperty("--tex-op", grid ? "1" : "0");
+    localStorage.setItem("ada.grid", grid ? "1" : "0");
+  }, [grid]);
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -274,26 +316,52 @@ export default function App() {
   // launcher agent types + the always-on fleet feed (every agent, one socket)
   useEffect(() => {
     listAgents().then(setAgentTypes).catch(() => {});
+    refreshTasks();
+    refreshCal();
   }, []);
   useEffect(() => openFleet((m) => setFleet((prev) => reduceFleet(prev, m))), []);
   useEffect(() => {
     const t = setInterval(() => setClock(Date.now() / 1000), 1000);
     return () => clearInterval(t);
   }, []);
+  // Real local-vs-cloud split from the router (the offload happens inside tools, so the
+  // per-run event stream can't see it — poll the router's own accounting instead).
+  useEffect(() => {
+    const pull = () => getRouterStats().then(setRouterStats).catch(() => {});
+    pull();
+    const id = setInterval(pull, 4000);
+    return () => clearInterval(id);
+  }, []);
 
   async function sendText(text: string) {
     text = text.trim();
-    if (!text || running) return;
+    if (!text) return;
+    // If Ada is mid-task, this message STEERS the live run instead of starting a new one —
+    // she picks it up at her next step. The backend also echoes it into the trace.
+    if (running && activeRunId) {
+      setMsgs((m) => [...m, { role: "user", text, time: now() }]);
+      setInput("");
+      const r = await steerRun(activeRunId, text);
+      if (!r.delivered) setMsgs((m) => [...m, { role: "ada", text: `(couldn't steer — ${r.reason ?? "run ended"})`, time: now() }]);
+      return;
+    }
     setMsgs((m) => [...m, { role: "user", text, time: now() }]);
     setInput("");
     setEvents([]);
     setRunning(true);
-    await startRun(text, (e) => {
-      setEvents((prev) => [...prev, e]);
-      if (e.type === "final") setMsgs((m) => [...m, { role: "ada", text: String(e.payload.text ?? ""), time: now() }]);
-      if (e.type === "error") setMsgs((m) => [...m, { role: "ada", text: `Something broke: ${e.payload.message}`, time: now() }]);
-    });
+    await startRun(
+      text,
+      (e) => {
+        setEvents((prev) => [...prev, e]);
+        if (e.type === "final") setMsgs((m) => [...m, { role: "ada", text: String(e.payload.text ?? ""), time: now() }]);
+        if (e.type === "error") setMsgs((m) => [...m, { role: "ada", text: `Something broke: ${e.payload.message}`, time: now() }]);
+      },
+      (runId) => setActiveRunId(runId),
+    );
     setRunning(false);
+    setActiveRunId(null);
+    refreshTasks(); // Ada may have added/completed tasks via her tools — reflect it
+    refreshCal(); // …or created/moved a calendar event
   }
   const replay = () => {
     const last = [...msgs].reverse().find((m) => m.role === "user");
@@ -308,7 +376,10 @@ export default function App() {
   };
 
   const t = summarize(events);
-  const localPct = t.tools ? Math.round((t.local / t.tools) * 100) : 0;
+  const localPct =
+    routerStats && routerStats.total_calls
+      ? Math.round((routerStats.local_calls / routerStats.total_calls) * 100)
+      : 0;
   const status = running ? "RUNNING" : events.length ? "DONE" : "READY";
   const statusColor = running ? "var(--accent)" : events.length ? "var(--accent)" : "var(--text-faint)";
 
@@ -334,9 +405,9 @@ export default function App() {
               height: 38,
               flex: "none",
               borderRadius: 10,
-              background: "linear-gradient(160deg,#13161f,#090b0f)",
-              border: "1px solid var(--line-2)",
-              boxShadow: "0 0 24px -8px rgba(var(--accent-rgb),.6), inset 0 1px 0 rgba(255,255,255,.06)",
+              background: "linear-gradient(160deg,#161b24,#0d1017)",
+              border: "1px solid rgba(var(--accent-rgb),.42)",
+              boxShadow: "0 0 24px -8px rgba(var(--accent-rgb),.7), inset 0 1px 0 rgba(255,255,255,.05)",
               display: "grid",
               placeItems: "center",
             }}
@@ -345,7 +416,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 5 }}>
-              <span style={{ fontFamily: "var(--serif)", fontSize: 23, fontWeight: 600, letterSpacing: ".015em", lineHeight: 0.8 }}>ADA</span>
+              <span style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-.015em", lineHeight: 0.85 }}>Ada</span>
               <span
                 style={{
                   width: 6,
@@ -410,6 +481,7 @@ export default function App() {
               <div style={{ flex: 1, background: "rgba(255,255,255,.22)" }} />
             </div>
           </div>
+          <ThemeBar accent={accent} setAccent={setAccent} grid={grid} setGrid={setGrid} />
         </div>
       </aside>
 
@@ -450,7 +522,7 @@ export default function App() {
                 <input
                   className="bare"
                   value={input}
-                  placeholder="Message Ada…"
+                  placeholder={running ? "Steer Ada while she works…" : "Message Ada…"}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendText(input)}
                   style={{ flex: 1, color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13.5, padding: "8px 0" }}
@@ -458,8 +530,8 @@ export default function App() {
                 <button
                   className="btn-accent"
                   onClick={() => sendText(input)}
-                  disabled={running}
-                  style={{ width: 34, height: 34, flex: "none", borderRadius: 8, background: "var(--accent)", border: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: running ? "default" : "pointer", opacity: running ? 0.5 : 1 }}
+                  title={running ? "Steer the running task" : "Send"}
+                  style={{ width: 34, height: 34, flex: "none", borderRadius: 8, background: "var(--accent)", border: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", opacity: 1 }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0c0e11" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M5 12h13M12 5l7 7-7 7" />
@@ -518,18 +590,22 @@ export default function App() {
 
         {/* secondary panels */}
         <section style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, alignItems: "start" }}>
-          <CalendarPanel />
+          <CalendarPanel cal={cal} />
           <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
             <TodoPanel
               tasks={tasks}
               newTask={newTask}
               setNewTask={setNewTask}
-              onToggle={(i) => setTasks((ts) => ts.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
+              onToggle={(t) => {
+                // optimistic flip, then persist + reconcile
+                setTasks((ts) => ts.map((x) => (x.id === t.id ? { ...x, done: !x.done } : x)));
+                setTaskDone(t.id, !t.done).then(refreshTasks).catch(refreshTasks);
+              }}
               onAdd={() => {
                 const v = newTask.trim();
                 if (!v) return;
-                setTasks((ts) => [...ts, { text: v, due: "", done: false }]);
                 setNewTask("");
+                addTask(v).then(refreshTasks).catch(refreshTasks);
               }}
             />
             <RemindersPanel />
@@ -553,6 +629,10 @@ export default function App() {
           />
         ) : view === "arena" ? (
           <ArenaView agentTypes={agentTypes} />
+        ) : view === "docs" ? (
+          <DocsView />
+        ) : view === "router" ? (
+          <RouterView />
         ) : (
           <MissionView agentTypes={agentTypes} />
         )}
@@ -564,8 +644,8 @@ export default function App() {
 /* ── chat pieces ───────────────────────────── */
 function Avatar() {
   return (
-    <div style={{ width: 26, height: 26, flex: "none", borderRadius: 7, background: "rgba(var(--accent-rgb),.12)", border: "1px solid rgba(var(--accent-rgb),.3)", display: "flex", alignItems: "center", justifyContent: "center", ...mono(13, "var(--accent)"), fontWeight: 600 }}>
-      A
+    <div style={{ width: 26, height: 26, flex: "none", borderRadius: "50%", background: "rgba(var(--accent-rgb),.1)", border: "1px solid rgba(var(--accent-rgb),.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <PunchA size={15} />
     </div>
   );
 }
@@ -616,7 +696,7 @@ function TraceRow({ e, last }: { e: AgentEvent; last: boolean }) {
   const isLocal = e.model?.includes("local");
   const kind = e.type;
   const dot =
-    kind === "final" ? "var(--accent)" : kind === "error" ? "var(--red)" : kind === "tool_result" ? "rgba(var(--accent-rgb),.6)" : "var(--text-dim)";
+    kind === "final" ? "var(--accent)" : kind === "error" ? "var(--red)" : kind === "message" ? "var(--accent)" : kind === "tool_result" ? "rgba(var(--accent-rgb),.6)" : "var(--text-dim)";
   const glow = kind === "final" ? "0 0 10px rgba(var(--accent-rgb),.7)" : "none";
 
   let content: JSX.Element | null = null;
@@ -660,6 +740,16 @@ function TraceRow({ e, last }: { e: AgentEvent; last: boolean }) {
         <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-dim)" }}>{String(e.payload.message ?? "")}</div>
       </div>
     );
+  } else if (kind === "message") {
+    // A user steer injected mid-task (payload.steer), or an agent→agent handoff (Arena/Mission).
+    const steer = Boolean(e.payload.steer);
+    content = (
+      <div style={{ background: steer ? "rgba(var(--accent-rgb),.06)" : "var(--panel-2)", border: `1px solid ${steer ? "rgba(var(--accent-rgb),.28)" : "var(--line)"}`, borderRadius: 10, padding: "9px 13px", display: "flex", alignItems: "baseline", gap: 9 }}>
+        <span style={{ ...mono(10, "var(--accent)", ".1em"), fontWeight: 600, flex: "none" }}>{steer ? "YOU ▸" : `${String(e.payload.from ?? "msg")} ▸`}</span>
+        <span style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text)", flex: 1, wordBreak: "break-word" }}>{String(e.payload.text ?? "")}</span>
+        {steer && <span style={{ ...mono(9, "var(--text-faint)", ".1em"), flex: "none" }}>STEER</span>}
+      </div>
+    );
   }
   if (!content) return null;
 
@@ -674,58 +764,96 @@ function TraceRow({ e, last }: { e: AgentEvent; last: boolean }) {
   );
 }
 
-/* ── side panels (demo) ────────────────────── */
-function CalendarPanel() {
+/* ── side panels ───────────────────────────── */
+const CAL_TOP0 = 10; // px offset of the 09:00 gridline
+const CAL_HOUR_H = 40; // px per hour
+const CAL_START = 9; // first hour shown
+const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+const toY = (hoursFromMidnight: number) => CAL_TOP0 + (hoursFromMidnight - CAL_START) * CAL_HOUR_H;
+
+function CalendarPanel({ cal }: { cal: CalState }) {
+  const now = new Date();
+  const nowH = now.getHours() + now.getMinutes() / 60;
+  const nowY = toY(nowH);
+  const showNow = nowH >= CAL_START && nowH <= CAL_START + HOURS.length - 1;
+  const timed = cal.events.filter((e) => !e.all_day && e.start.includes("T"));
+
   return (
     <div style={{ ...panel, boxShadow: panel.boxShadow }}>
       <div style={phead}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={mono(11, "var(--text-dim)", ".16em")}>CALENDAR</span>
-          <span style={mono(9.5, "var(--text-faint)", ".1em")}>DAY · DEMO</span>
+          <span style={mono(9.5, "var(--text-faint)", ".1em")}>DAY</span>
         </div>
-        <span style={{ ...mono(10, "var(--accent)"), border: "1px solid rgba(var(--accent-rgb),.3)", background: "rgba(var(--accent-rgb),.07)", borderRadius: 5, padding: "2px 7px" }}>4 EVENTS</span>
+        {cal.authorized ? (
+          <span style={{ ...mono(10, "var(--accent)"), border: "1px solid rgba(var(--accent-rgb),.3)", background: "rgba(var(--accent-rgb),.07)", borderRadius: 5, padding: "2px 7px" }}>{timed.length} EVENT{timed.length === 1 ? "" : "S"}</span>
+        ) : (
+          <span style={{ ...mono(10, "var(--text-faint)"), border: "1px solid var(--line-2)", borderRadius: 5, padding: "2px 7px" }}>NOT CONNECTED</span>
+        )}
       </div>
-      <div style={{ position: "relative", height: 384, padding: "0 16px" }}>
-        {HOURS.map((h, i) => (
-          <div key={h}>
-            <div style={{ position: "absolute", left: 52, right: 16, top: 10 + i * 40, height: 1, background: "var(--line)" }} />
-            <div style={{ position: "absolute", left: 16, top: 4 + i * 40, ...mono(9.5, "var(--text-faint)") }}>{h}</div>
-          </div>
-        ))}
-        {/* now line */}
-        <div style={{ position: "absolute", left: 44, right: 16, top: 183, height: 1, background: "var(--accent)", opacity: 0.85, zIndex: 3 }} />
-        <div style={{ position: "absolute", left: 40, top: 180, width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 8px rgba(var(--accent-rgb),.7)", zIndex: 3 }} />
-        {CAL_EVENTS.map((ev, i) => {
-          const accent = ev.kind === "accent";
-          return (
-            <div
-              key={i}
-              style={{
-                position: "absolute",
-                left: 58,
-                right: 16,
-                top: ev.top,
-                height: ev.height,
-                background: accent ? "rgba(var(--accent-rgb),.09)" : "var(--panel-2)",
-                border: accent ? "1px solid rgba(var(--accent-rgb),.36)" : "1px solid var(--line)",
-                borderLeft: `2px solid ${accent ? "var(--accent)" : ev.kind === "normal" ? "var(--text-dim)" : "var(--text-faint)"}`,
-                borderRadius: 7,
-                padding: "0 11px",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                opacity: ev.kind === "dim" ? 0.55 : 1,
-                boxShadow: accent ? "0 0 24px -10px rgba(var(--accent-rgb),.7)" : undefined,
-                zIndex: accent ? 2 : 1,
-              }}
-            >
-              <span style={mono(11, accent ? "var(--accent)" : "var(--text-dim)")}>{ev.time}</span>
-              <span style={{ fontSize: 12.5, color: accent ? "var(--text)" : undefined }}>{ev.title}</span>
-              {ev.was && <span style={{ ...mono(9, "var(--text-faint)"), textDecoration: "line-through", marginLeft: "auto" }}>{ev.was}</span>}
+
+      {!cal.authorized ? (
+        <div style={{ padding: "34px 22px", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+          <span style={{ fontSize: 13, color: "var(--text)" }}>Connect your Google Calendar</span>
+          <span style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>
+            Ada will show your real day here and can reschedule events for you. Drop your OAuth client into <code style={{ fontFamily: "var(--mono)", fontSize: "0.85em", color: "var(--text)" }}>backend/.google/</code> and run <code style={{ fontFamily: "var(--mono)", fontSize: "0.85em", color: "var(--text)" }}>authorize_google.py</code> once.
+          </span>
+        </div>
+      ) : (
+        <div style={{ position: "relative", height: 384, padding: "0 16px" }}>
+          {HOURS.map((h, i) => (
+            <div key={h}>
+              <div style={{ position: "absolute", left: 52, right: 16, top: CAL_TOP0 + i * CAL_HOUR_H, height: 1, background: "var(--line)" }} />
+              <div style={{ position: "absolute", left: 16, top: CAL_TOP0 - 6 + i * CAL_HOUR_H, ...mono(9.5, "var(--text-faint)") }}>{h}</div>
             </div>
-          );
-        })}
-      </div>
+          ))}
+          {showNow && (
+            <>
+              <div style={{ position: "absolute", left: 44, right: 16, top: nowY, height: 1, background: "var(--accent)", opacity: 0.85, zIndex: 3 }} />
+              <div style={{ position: "absolute", left: 40, top: nowY - 3, width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 8px rgba(var(--accent-rgb),.7)", zIndex: 3 }} />
+            </>
+          )}
+          {timed.length === 0 && (
+            <div style={{ position: "absolute", left: 58, right: 16, top: 170, ...mono(11, "var(--text-faint)", ".04em") }}>Nothing scheduled today.</div>
+          )}
+          {timed.map((ev) => {
+            const s = new Date(ev.start);
+            const e = new Date(ev.end);
+            const sh = s.getHours() + s.getMinutes() / 60;
+            const eh = e.getHours() + e.getMinutes() / 60;
+            const live = now >= s && now < e; // happening right now → accent it
+            const top = Math.max(CAL_TOP0, toY(sh));
+            const height = Math.max(26, (eh - sh) * CAL_HOUR_H);
+            return (
+              <div
+                key={ev.id}
+                title={ev.attendees.length ? ev.attendees.join(", ") : ev.title}
+                style={{
+                  position: "absolute",
+                  left: 58,
+                  right: 16,
+                  top,
+                  height,
+                  background: live ? "rgba(var(--accent-rgb),.09)" : "var(--panel-2)",
+                  border: live ? "1px solid rgba(var(--accent-rgb),.36)" : "1px solid var(--line)",
+                  borderLeft: `2px solid ${live ? "var(--accent)" : "var(--text-dim)"}`,
+                  borderRadius: 7,
+                  padding: "0 11px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  overflow: "hidden",
+                  boxShadow: live ? "0 0 24px -10px rgba(var(--accent-rgb),.7)" : undefined,
+                  zIndex: live ? 2 : 1,
+                }}
+              >
+                <span style={mono(11, live ? "var(--accent)" : "var(--text-dim)")}>{hhmm(s)}</span>
+                <span style={{ fontSize: 12.5, color: live ? "var(--text)" : undefined, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ev.title}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -737,10 +865,10 @@ function TodoPanel({
   onToggle,
   onAdd,
 }: {
-  tasks: typeof INITIAL_TASKS;
+  tasks: Task[];
   newTask: string;
   setNewTask: (v: string) => void;
-  onToggle: (i: number) => void;
+  onToggle: (t: Task) => void;
   onAdd: () => void;
 }) {
   const open = tasks.filter((t) => !t.done).length;
@@ -751,8 +879,11 @@ function TodoPanel({
         <span style={mono(10, "var(--text-faint)")}>{open} OPEN</span>
       </div>
       <div>
-        {tasks.map((t, i) => (
-          <div key={i} className="row-hover" onClick={() => onToggle(i)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 16px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
+        {tasks.length === 0 && (
+          <div style={{ padding: "16px", fontSize: 12.5, color: "var(--text-faint)" }}>No tasks yet — add one below, or ask Ada in chat.</div>
+        )}
+        {tasks.map((t) => (
+          <div key={t.id} className="row-hover" onClick={() => onToggle(t)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 16px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
             <div style={{ width: 17, height: 17, flex: "none", borderRadius: 5, border: `1px solid ${t.done ? "var(--accent)" : "var(--line-2)"}`, background: t.done ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
               {t.done && (
                 <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="#0c0e11" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
@@ -760,7 +891,7 @@ function TodoPanel({
                 </svg>
               )}
             </div>
-            <span style={{ fontSize: 13, flex: 1, color: t.done ? "var(--text-faint)" : "var(--text)", textDecoration: t.done ? "line-through" : undefined }}>{t.text}</span>
+            <span style={{ fontSize: 13, flex: 1, color: t.done ? "var(--text-faint)" : "var(--text)", textDecoration: t.done ? "line-through" : undefined }}>{t.title}</span>
             {t.due && <span style={mono(10.5, t.due === "Today" ? "var(--accent)" : "var(--text-faint)")}>{t.due}</span>}
           </div>
         ))}
@@ -795,11 +926,264 @@ function RemindersPanel() {
 }
 
 /* ── small bits ────────────────────────────── */
+/* ── Docs — Ada's long-term memory (Qdrant / RAG) ── */
+function DocsView() {
+  const [all, setAll] = useState<Memory[]>([]);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<Memory[] | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const refresh = () => listMemories().then(setAll).catch(() => {});
+  useEffect(() => { refresh(); }, []);
+
+  const runSearch = async () => {
+    const query = q.trim();
+    if (!query) { setHits(null); return; }
+    setHits(await searchMemory(query).catch(() => []));
+  };
+  const add = async () => {
+    const t = draft.trim();
+    if (!t) return;
+    setDraft("");
+    await addMemory(t).catch(() => {});
+    refresh();
+  };
+  const remove = async (id: string) => {
+    await deleteMemory(id).catch(() => {});
+    setHits((h) => (h ? h.filter((m) => m.id !== id) : h));
+    refresh();
+  };
+
+  const shown = hits ?? all;
+  return (
+    <>
+      <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span style={mono(12, "var(--text)", ".14em")}>DOCS · MEMORY</span>
+          <span style={mono(11, "var(--text-faint)", ".1em")}>QDRANT · SEMANTIC RECALL</span>
+        </div>
+        <HeaderPill text={`${all.length} STORED`} accent />
+      </header>
+
+      <div style={{ ...panel, padding: 0, maxWidth: 760, width: "100%" }}>
+        {/* search */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" strokeWidth="1.8" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>
+          <input className="bare" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch()} placeholder="Search Ada's memory by meaning…" style={{ flex: 1, color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13.5, padding: "6px 0" }} />
+          {hits !== null && (
+            <button className="btn-ghost" onClick={() => { setQ(""); setHits(null); }} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "4px 9px", cursor: "pointer" }}>CLEAR</button>
+          )}
+          <button className="btn-accent" onClick={runSearch} style={{ ...mono(10, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 7, padding: "6px 12px", cursor: "pointer" }}>SEARCH</button>
+        </div>
+
+        {/* list */}
+        <div style={{ maxHeight: "calc(100vh / 1.5 - 320px)", minHeight: 200, overflowY: "auto" }}>
+          {shown.length === 0 && (
+            <div style={{ padding: 22, fontSize: 12.5, color: "var(--text-faint)" }}>{hits !== null ? "No matches." : "Nothing stored yet. Tell Ada something to remember, or add a memory below."}</div>
+          )}
+          {shown.map((m) => (
+            <div key={m.id} className="row-hover" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+              <span style={{ width: 6, height: 6, marginTop: 6, flex: "none", borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 7px rgba(var(--accent-rgb),.6)" }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, color: "var(--text)", lineHeight: 1.45 }}>{m.text}</div>
+                <div style={{ display: "flex", gap: 10, marginTop: 4, alignItems: "center" }}>
+                  {m.created && <span style={mono(9.5, "var(--text-faint)", ".04em")}>{m.created.replace("T", " ").slice(0, 16)}</span>}
+                  {m.source && <span style={mono(9.5, "var(--text-faint)", ".08em")}>{m.source.toUpperCase()}</span>}
+                  {m.score !== undefined && <span style={mono(9.5, "var(--accent)", ".04em")}>match {m.score.toFixed(2)}</span>}
+                </div>
+              </div>
+              <button className="btn-ghost" onClick={() => remove(m.id)} title="Forget" style={{ ...mono(10, "var(--text-faint)"), background: "transparent", border: "1px solid var(--line)", borderRadius: 6, padding: "3px 8px", cursor: "pointer", flex: "none" }}>✕</button>
+            </div>
+          ))}
+        </div>
+
+        {/* add */}
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "10px 12px 10px 16px", borderTop: "1px solid var(--line)" }}>
+          <span style={{ width: 17, height: 17, flex: "none", borderRadius: 5, border: "1px dashed var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)", fontSize: 14, lineHeight: 1 }}>+</span>
+          <input className="bare" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Add a memory…" style={{ flex: 1, color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13, padding: "4px 0" }} />
+          <button className="btn-ghost" onClick={add} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: "pointer" }}>SAVE</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ── Router — local Qwen ↔ cloud Claude offload ── */
+function RouterView() {
+  const [stats, setStats] = useState<RouterStats | null>(null);
+  const [health, setHealth] = useState<RouterHealth | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    const tick = () => {
+      getRouterStats().then((s) => live && setStats(s)).catch(() => {});
+      getRouterHealth().then((h) => live && setHealth(h)).catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => { live = false; clearInterval(id); };
+  }, []);
+
+  const total = stats?.total_calls ?? 0;
+  const local = stats?.local_calls ?? 0;
+  const cloud = stats?.cloud_calls ?? 0;
+  const localPct = total ? Math.round((local / total) * 100) : 0;
+  const online = health?.reachable && health?.ready;
+  const money = (n: number) => `$${(n ?? 0).toFixed(4)}`;
+
+  return (
+    <>
+      <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span style={mono(12, "var(--text)", ".14em")}>ROUTER · MODEL OFFLOAD</span>
+          <span style={mono(11, "var(--text-faint)", ".1em")}>LOCAL QWEN ↔ CLOUD CLAUDE</span>
+        </div>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 7, ...mono(10, online ? "var(--accent)" : "var(--red)", ".08em"), border: `1px solid ${online ? "rgba(var(--accent-rgb),.3)" : "rgba(255,138,128,.35)"}`, background: online ? "rgba(var(--accent-rgb),.07)" : "rgba(255,138,128,.08)", borderRadius: 6, padding: "4px 9px" }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: online ? "var(--accent)" : "var(--red)", boxShadow: online ? "0 0 7px rgba(var(--accent-rgb),.7)" : "none" }} />
+          {online ? "LOCAL MODEL READY" : health?.reachable ? "MODEL NOT LOADED" : "OLLAMA OFFLINE"}
+        </span>
+      </header>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 820, width: "100%" }}>
+        {/* two model cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <ModelCard tier="LOCAL" role="cheap subtasks · free" model={stats?.local_model ?? health?.target ?? "—"} calls={local} avgMs={stats?.local_avg_ms ?? 0} accent />
+          <ModelCard tier="CLOUD" role="reasoning · the bill" model={stats?.cloud_model ?? "claude-haiku-4-5"} calls={cloud} avgMs={stats?.cloud_avg_ms ?? 0} />
+        </div>
+
+        {/* headline: split + savings */}
+        <div style={{ ...panel, padding: 16, gap: 13 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <span style={mono(10, "var(--text-faint)", ".13em")}>OFFLOADED TO LOCAL</span>
+            <span style={mono(11, "var(--text-dim)", ".04em")}>{local} / {total} calls</span>
+          </div>
+          {/* proportion bar */}
+          <div style={{ display: "flex", height: 9, borderRadius: 5, overflow: "hidden", background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+            <div style={{ width: `${localPct}%`, background: "var(--accent)", boxShadow: "0 0 10px rgba(var(--accent-rgb),.5)", transition: "width .4s" }} />
+            <div style={{ flex: 1, background: "rgba(255,255,255,.06)" }} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 4 }}>
+            <BigStat label="RAN LOCAL" value={`${localPct}%`} accent />
+            <BigStat label="EST. SAVED vs HAIKU" value={money(stats?.saved_usd ?? 0)} accent />
+            <BigStat label="CLOUD SPEND" value={money(stats?.cost_usd ?? 0)} />
+          </div>
+        </div>
+
+        {/* recent calls */}
+        <div style={{ ...panel, padding: 0 }}>
+          <div style={{ ...phead }}>
+            <span style={mono(11, "var(--text-dim)", ".1em")}>RECENT ROUTED CALLS</span>
+            <HeaderPill text={`${total} TOTAL`} />
+          </div>
+          <div style={{ maxHeight: "calc(100vh / 1.5 - 430px)", minHeight: 140, overflowY: "auto" }}>
+            {(!stats || stats.recent.length === 0) && (
+              <div style={{ padding: 22, fontSize: 12.5, color: "var(--text-faint)" }}>
+                Nothing routed yet. Ask Ada to summarize a note or triage some text — cheap work goes to the local model and shows up here.
+              </div>
+            )}
+            {stats?.recent.map((c, i) => (
+              <div key={i} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--line)" }}>
+                <span style={{ ...mono(9.5, c.where === "local" ? "var(--accent)" : "var(--text-dim)", ".06em"), border: `1px solid ${c.where === "local" ? "rgba(var(--accent-rgb),.3)" : "var(--line-2)"}`, background: c.where === "local" ? "rgba(var(--accent-rgb),.07)" : undefined, borderRadius: 5, padding: "2px 7px", flex: "none", width: 52, textAlign: "center" }}>{c.where.toUpperCase()}</span>
+                <span style={{ ...mono(12, "var(--text)"), flex: "none", width: 84 }}>{c.kind}</span>
+                <span style={{ ...mono(10.5, "var(--text-faint)", ".02em"), flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.model}</span>
+                <span style={{ ...mono(10.5, "var(--text-dim)"), flex: "none", width: 64, textAlign: "right" }}>{c.latency_ms} ms</span>
+                <span style={{ ...mono(10.5, c.saved_usd > 0 ? "var(--accent)" : "var(--text-faint)"), flex: "none", width: 74, textAlign: "right" }}>{c.saved_usd > 0 ? `+${money(c.saved_usd)}` : money(c.cost_usd)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ModelCard({ tier, role, model, calls, avgMs, accent }: { tier: string; role: string; model: string; calls: number; avgMs: number; accent?: boolean }) {
+  return (
+    <div style={{ ...panel, padding: 15, gap: 11, borderColor: accent ? "rgba(var(--accent-rgb),.22)" : "var(--line)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={mono(10, accent ? "var(--accent)" : "var(--text-dim)", ".13em")}>{tier}</span>
+        <span style={mono(9.5, "var(--text-faint)", ".06em")}>{role}</span>
+      </div>
+      <div style={{ fontFamily: "var(--mono)", fontSize: 14, color: "var(--text)", letterSpacing: ".01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 2 }}>
+        <RailStat label="CALLS" value={String(calls)} accent={accent} />
+        <div style={{ width: 14 }} />
+        <RailStat label="AVG" value={avgMs ? `${avgMs} ms` : "—"} />
+      </div>
+    </div>
+  );
+}
+
+function BigStat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <span style={mono(9, "var(--text-faint)", ".12em")}>{label}</span>
+      <span style={{ fontFamily: "var(--mono)", fontSize: 20, fontWeight: 500, color: accent ? "var(--accent)" : "var(--text)", letterSpacing: "-.01em" }}>{value}</span>
+    </div>
+  );
+}
+
 function RailStat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
       <span style={mono(9.5, "var(--text-faint)", ".13em")}>{label}</span>
       <span style={mono(13, accent ? "var(--accent)" : "var(--text)")}>{value}</span>
+    </div>
+  );
+}
+function ThemeBar({
+  accent,
+  setAccent,
+  grid,
+  setGrid,
+}: {
+  accent: string;
+  setAccent: (v: string) => void;
+  grid: boolean;
+  setGrid: (v: boolean) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={mono(9, "var(--text-faint)", ".13em")}>ACCENT</span>
+        <span
+          onClick={() => setGrid(!grid)}
+          title="Toggle dot grid"
+          className="btn-ghost"
+          style={{
+            ...mono(8.5, grid ? "var(--accent)" : "var(--text-faint)", ".1em"),
+            border: `1px solid ${grid ? "rgba(var(--accent-rgb),.4)" : "var(--line)"}`,
+            borderRadius: 4,
+            padding: "1px 5px",
+            cursor: "pointer",
+          }}
+        >
+          GRID
+        </span>
+      </div>
+      <div style={{ display: "flex", gap: 7 }}>
+        {ACCENTS.map((a) => (
+          <span
+            key={a.key}
+            onClick={() => setAccent(a.key)}
+            title={a.key}
+            className="swatch"
+            style={{
+              width: 15,
+              height: 15,
+              flex: "none",
+              borderRadius: "50%",
+              cursor: "pointer",
+              background: `rgb(${a.rgb})`,
+              opacity: accent === a.key ? 1 : 0.72,
+              boxShadow:
+                accent === a.key
+                  ? `0 0 0 2px var(--bg), 0 0 0 3.5px rgb(${a.rgb}), 0 0 10px -1px rgb(${a.rgb})`
+                  : "inset 0 0 0 1px rgba(0,0,0,.35)",
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -860,6 +1244,7 @@ interface FleetProps {
 }
 function FleetView(p: FleetProps) {
   const [tab, setTab] = useState<"trace" | "terminal">("trace");
+  const [steerText, setSteerText] = useState("");
   const runs = Object.entries(p.fleet)
     .map(([id, r]) => ({ id, ...r }))
     .sort((a, b) => {
@@ -878,6 +1263,17 @@ function FleetView(p: FleetProps) {
   useEffect(() => {
     setTab(isCoder ? "terminal" : "trace");
   }, [focusId, isCoder]);
+
+  // Live steering: LLM-loop agents (Ada/Scout/Atlas) can take a mid-task message; a
+  // subprocess (Forge) or a finished run can't.
+  const steerable =
+    !!focusRun && focusRun.status === "running" && ["ada", "researcher", "planner"].includes(focusRun.meta?.agent_type ?? "");
+  const sendSteer = async () => {
+    const txt = steerText.trim();
+    if (!txt || !focusId) return;
+    setSteerText("");
+    await steerRun(focusId, txt);
+  };
 
   return (
     <section style={{ display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
@@ -1002,6 +1398,26 @@ function FleetView(p: FleetProps) {
             {focusRun && focusRun.events.map((e, i) => <TraceRow key={i} e={e} last={i === focusRun.events.length - 1} />)}
           </div>
         )}
+        {steerable && tab === "trace" && (
+          <div style={{ flex: "none", borderTop: "1px solid var(--line)", background: "rgba(255,255,255,.015)", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ ...mono(9.5, "var(--accent)", ".1em"), fontWeight: 600, flex: "none" }}>STEER ▸</span>
+            <input
+              className="bare"
+              value={steerText}
+              onChange={(e) => setSteerText(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && sendSteer()}
+              placeholder={`Message ${focusRun?.meta?.name ?? "agent"} while it works…`}
+              style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "8px 12px", color: "var(--text)", fontFamily: "var(--sans)", fontSize: 12.5 }}
+            />
+            <button
+              className="btn-accent"
+              onClick={sendSteer}
+              style={{ ...mono(10, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 8, padding: "8px 13px", cursor: "pointer", flex: "none" }}
+            >
+              SEND
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1055,7 +1471,7 @@ function TerminalPanel({ run }: { run: FleetRun }) {
     endRef.current?.scrollIntoView();
   }, [logs.length]);
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px", background: "#07090d", borderRadius: "0 0 13px 13px" }}>
+    <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px", background: "#050506", borderRadius: "0 0 13px 13px" }}>
       {logs.length === 0 && <div style={mono(11.5, "var(--text-faint)")}>waiting for output…</div>}
       {logs.map((e, i) => (
         <div

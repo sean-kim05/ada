@@ -50,10 +50,13 @@ export type FleetMsg =
 const API = "http://127.0.0.1:8000";
 const WS = "ws://127.0.0.1:8000";
 
-// Start a secretary (Ada) run and stream its events. Resolves when the run ends.
+// Start a secretary (Ada) run and stream its events. Resolves when the run ends. `onStart`
+// fires with the run id the moment the run begins — hold onto it to steer the run live
+// (see steerRun) while it's still working.
 export async function startRun(
   message: string,
-  onEvent: (e: AgentEvent) => void
+  onEvent: (e: AgentEvent) => void,
+  onStart?: (runId: string) => void,
 ): Promise<void> {
   const resp = await fetch(`${API}/api/chat`, {
     method: "POST",
@@ -61,6 +64,7 @@ export async function startRun(
     body: JSON.stringify({ message }),
   });
   const { run_id } = await resp.json();
+  onStart?.(run_id);
 
   return new Promise((resolve) => {
     const ws = new WebSocket(`${WS}/api/runs/${run_id}/ws`);
@@ -74,6 +78,18 @@ export async function startRun(
     };
     ws.onerror = () => resolve();
   });
+}
+
+// Send a message to a RUNNING agent — steer it mid-task. The agent picks it up at its next
+// step and adapts. Returns { delivered } — false if the run already finished or can't be
+// steered live (e.g. a claude_code subprocess).
+export async function steerRun(runId: string, text: string): Promise<{ delivered: boolean; reason?: string }> {
+  const r = await fetch(`${API}/api/runs/${runId}/steer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return r.json();
 }
 
 // The agent types the runtime can launch (for the Fleet launcher).
@@ -92,6 +108,137 @@ export async function spawnAgent(agentType: string, prompt: string, workdir?: st
   });
   const j = await r.json();
   return j.run_id;
+}
+
+// ── Tasks (real, Postgres-backed) ─────────────────────────
+// The same store the secretary's task tools write to — so a task Ada adds in chat
+// shows up in the deck's To-do panel, and vice-versa.
+export interface Task {
+  id: string;
+  title: string;
+  due: string | null;
+  done: boolean;
+  created: string;
+}
+
+export async function listTasks(): Promise<Task[]> {
+  const r = await fetch(`${API}/api/tasks`);
+  return r.json();
+}
+
+export async function addTask(title: string, due?: string): Promise<Task> {
+  const r = await fetch(`${API}/api/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, due: due ?? null }),
+  });
+  return r.json();
+}
+
+export async function setTaskDone(id: string, done: boolean): Promise<Task> {
+  const r = await fetch(`${API}/api/tasks/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ done }),
+  });
+  return r.json();
+}
+
+// ── Calendar (real Google Calendar) ───────────────────────
+export interface CalEvent {
+  id: string;
+  title: string;
+  start: string; // RFC3339 datetime, or ISO date for all-day
+  end: string;
+  all_day: boolean;
+  location: string | null;
+  attendees: string[];
+  link: string | null;
+}
+export interface CalState {
+  authorized: boolean;
+  needs_auth?: boolean;
+  error?: string;
+  events: CalEvent[];
+}
+
+// Fetch the day's real events. `authorized:false` → deck shows a "connect Google" state.
+export async function getCalendar(day?: string): Promise<CalState> {
+  const r = await fetch(`${API}/api/calendar/events${day ? `?day=${day}` : ""}`);
+  return r.json();
+}
+
+// ── Long-term memory (Qdrant / RAG) ───────────────────────
+export interface Memory {
+  id: string;
+  text: string;
+  kind?: string;
+  source?: string;
+  created?: string;
+  score?: number; // present on search results
+}
+
+export async function listMemories(): Promise<Memory[]> {
+  const r = await fetch(`${API}/api/memory`);
+  return r.json();
+}
+export async function searchMemory(q: string): Promise<Memory[]> {
+  const r = await fetch(`${API}/api/memory/search?q=${encodeURIComponent(q)}`);
+  return r.json();
+}
+export async function addMemory(text: string): Promise<Memory> {
+  const r = await fetch(`${API}/api/memory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return r.json();
+}
+export async function deleteMemory(id: string): Promise<void> {
+  await fetch(`${API}/api/memory/${id}`, { method: "DELETE" });
+}
+
+// ── Model router (local Qwen vs cloud Claude) ─────────────
+// Ada pushes cheap subtasks (summarize/classify) to the free local model on the 5080;
+// the router records each call so the split — and the $ saved — is visible here.
+export interface RouterCall {
+  kind: string;
+  where: "local" | "cloud";
+  model: string;
+  prompt_chars: number;
+  output_chars: number;
+  latency_ms: number;
+  cost_usd: number;
+  saved_usd: number;
+  ts: number;
+}
+export interface RouterStats {
+  local_model: string;
+  cloud_model: string;
+  total_calls: number;
+  local_calls: number;
+  cloud_calls: number;
+  cost_usd: number;
+  saved_usd: number;
+  local_avg_ms: number;
+  cloud_avg_ms: number;
+  recent: RouterCall[];
+}
+export interface RouterHealth {
+  reachable: boolean;
+  ready: boolean;
+  target: string;
+  models?: string[];
+  error?: string;
+}
+
+export async function getRouterStats(): Promise<RouterStats> {
+  const r = await fetch(`${API}/api/router/stats`);
+  return r.json();
+}
+export async function getRouterHealth(): Promise<RouterHealth> {
+  const r = await fetch(`${API}/api/router/health`);
+  return r.json();
 }
 
 // Open the fleet feed — every agent's activity on one socket. Returns a close fn.
