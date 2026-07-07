@@ -161,7 +161,19 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
 - **Per-run `workdir`**: a run can target ANY existing dir (spawn API `workdir`, `spawn_agent`
   tool `workdir`, or the Fleet launcher DIR field) — defaults to the sandbox, validated to
   exist. This is what makes Forge usable for real work (build in `~/dev/mysite`, contribute
-  to a cloned OSS repo, etc.). Runs one-shot today; session-resume for follow-ups is TODO.
+  to a cloned OSS repo, etc.).
+- **Interactive Forge (continuous chat) — DONE.** Fleet-launched Forge runs are `interactive`:
+  the session stays open for a back-and-forth instead of a one-shot. `chat_claude_code` loops
+  turns, resuming the CLI session each turn (`claude -p <msg> --resume <session_id>`, session id
+  captured from the `system/init` event) so Forge keeps full context; the sandbox files persist
+  regardless. The run stays `running` between turns (no FINAL) draining `Run.steer_inbox` for
+  replies; FINAL fires only on idle-out (15 min) or error. `_run_turn` is the shared per-turn
+  runner (emits LOG/TOOL_* but not FINAL); `drive_claude_code` (one-shot) still wraps it for
+  Ada's `spawn_agent` delegate + Mission workers (they call `supervisor.start` with
+  `interactive=False`). Reply via `POST /api/runs/{id}/steer` (same endpoint as LLM steering;
+  the supervisor routes an interactive-Forge message to its next turn). Frontend: the Fleet
+  focused pane shows a **REPLY** box for running interactive claude_code runs. Verified: told a
+  launched Forge a secret, it stayed alive, a follow-up resumed and recalled it.
 - Invoked as: `claude -p <prompt> --output-format stream-json --verbose
   --dangerously-skip-permissions [--model …]`, `cwd=sandbox_dir`, `stdin=DEVNULL` (skips the
   CLI's 3s "no stdin" wait). Skip-permissions is acceptable **because** it's sandbox-scoped.

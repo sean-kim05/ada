@@ -14,7 +14,7 @@ from typing import Literal
 
 from app.agents import registry
 from app.agents.arena import run_arena
-from app.agents.claude_code import drive_claude_code
+from app.agents.claude_code import chat_claude_code, drive_claude_code
 from app.agents.loop import drive
 from app.agents.mission import run_mission
 from app.config import settings
@@ -35,6 +35,7 @@ class Run:
     started_at: float
     status: RunStatus = "running"
     workdir: str | None = None  # claude_code: where it works (None → sandbox)
+    interactive: bool = False   # claude_code: keep the session open for a continuous chat
     result_text: str = ""       # final output, captured for mission synthesis
     session_id: str | None = None  # set for chat runs → conversation memory (Redis)
     task: asyncio.Task | None = field(default=None, repr=False)
@@ -52,6 +53,7 @@ class Run:
             "status": self.status,
             "started_at": self.started_at,
             "workdir": self.workdir,
+            "interactive": self.interactive,
         }
 
 
@@ -79,10 +81,14 @@ class Supervisor:
         if run.status != "running":
             return {"delivered": False, "reason": "run already finished"}
         spec = registry.SPECS.get(run.agent_type)
-        if not spec or spec.driver != "llm":
-            return {"delivered": False, "reason": "this run type can't be steered live"}
-        run.steer_inbox.put_nowait(text)
-        return {"delivered": True}
+        if not spec:
+            return {"delivered": False, "reason": "this run type can't take messages"}
+        # LLM agents take a live mid-run steer; an interactive Forge takes it as the next
+        # conversation turn. A one-shot Forge (Ada's delegate / Mission worker) can't.
+        if spec.driver == "llm" or (spec.driver == "claude_code" and run.interactive):
+            run.steer_inbox.put_nowait(text)
+            return {"delivered": True}
+        return {"delivered": False, "reason": "this run type can't take messages"}
 
     def start(
         self,
@@ -90,10 +96,13 @@ class Supervisor:
         prompt: str,
         workdir: str | None = None,
         session_id: str | None = None,
+        interactive: bool = False,
     ) -> Run:
         """Launch `agent_type` on `prompt` as a background run. Returns immediately.
         `workdir` (claude_code only) is the directory the agent works in. `session_id`, if
-        set, gives the run conversation memory keyed by that session (chat)."""
+        set, gives the run conversation memory keyed by that session (chat). `interactive`
+        (claude_code only) keeps the Forge session open for a continuous back-and-forth
+        instead of a one-shot."""
         if agent_type not in registry.SPECS:
             raise ValueError(f"unknown agent_type: {agent_type}")
         run_id = uuid.uuid4().hex[:8]
@@ -107,6 +116,7 @@ class Supervisor:
             started_at=time.time(),
             workdir=workdir,
             session_id=session_id,
+            interactive=interactive,
         )
         self._runs[run_id] = run
         run.task = asyncio.create_task(self._drive(run))
@@ -179,7 +189,11 @@ class Supervisor:
                 cwd = run.workdir or settings.sandbox_dir
                 if not os.path.isdir(cwd):
                     raise RuntimeError(f"working dir does not exist: {cwd}")
-                run.result_text = await drive_claude_code(run.prompt, emitter, cwd)
+                if run.interactive:
+                    # a continuous Forge conversation — stays open for follow-up replies
+                    run.result_text = await chat_claude_code(run.prompt, emitter, cwd, run.steer_inbox)
+                else:
+                    run.result_text = await drive_claude_code(run.prompt, emitter, cwd)
             else:
                 agent = registry.build(run.agent_type)
                 # Chat runs carry a rolling conversation; other runs are one-shot.

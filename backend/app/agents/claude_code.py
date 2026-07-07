@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 
 from app.config import settings
 from app.runtime.bus import Emitter
@@ -24,18 +25,34 @@ from app.runtime.events import EventType
 
 MODEL_TAG = "claude-code"
 
+# How long an interactive Forge conversation waits for the next reply before it closes
+# itself (so parked sessions don't linger forever).
+_CHAT_IDLE_SECONDS = 15 * 60
 
-async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
-    """Run one headless Claude Code session and stream it as AgentEvents.
 
-    Emits FINAL on success and returns the final text; raises on failure so the
-    supervisor's error path emits ERROR (mirrors the LLM loop's contract).
-    """
+@dataclass
+class TurnResult:
+    text: str
+    session_id: str | None
+    tokens: int | None
+    cost: float | None
+    is_error: bool
+
+
+async def _run_turn(
+    prompt: str, emitter: Emitter, cwd: str, resume_session: str | None = None
+) -> TurnResult:
+    """Run ONE headless Claude Code turn and stream it as AgentEvents (LOG/TOOL_CALL/
+    TOOL_RESULT). Captures the CLI session id (for --resume) and the turn's result/usage,
+    but does NOT emit FINAL — the caller decides whether the run is over. `resume_session`
+    continues a prior conversation so Forge keeps full context across turns."""
     cmd = [
         settings.claude_bin, "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--dangerously-skip-permissions",  # scoped to the sandbox dir (see module docstring)
     ]
+    if resume_session:
+        cmd += ["--resume", resume_session]
     if settings.claude_code_model:
         cmd += ["--model", settings.claude_code_model]
 
@@ -56,6 +73,7 @@ async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
 
     tool_names: dict[str, str] = {}   # tool_use_id -> tool name
     final_text = ""
+    session_id: str | None = None
     tokens: int | None = None
     cost: float | None = None
     is_error = False
@@ -74,6 +92,7 @@ async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
         t = evt.get("type")
 
         if t == "system" and evt.get("subtype") == "init":
+            session_id = evt.get("session_id") or session_id
             model = evt.get("model", "?")
             await emitter.emit(
                 EventType.LOG,
@@ -132,18 +151,62 @@ async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
         # rate_limit_event and anything else: ignored
 
     rc = await proc.wait()
+    if rc != 0 and not final_text:
+        is_error = True
+        final_text = f"claude_code exited with code {rc}"
+    return TurnResult(final_text, session_id, tokens, cost, is_error)
 
-    if is_error or rc != 0:
-        raise RuntimeError(final_text or f"claude_code exited with code {rc}")
 
+async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
+    """One-shot Forge — used when Ada delegates a task (spawn_agent) or a Mission worker runs.
+    Emits FINAL on success and returns the final text; raises on failure so the supervisor's
+    error path emits ERROR (mirrors the LLM loop's contract)."""
+    r = await _run_turn(prompt, emitter, cwd)
+    if r.is_error:
+        raise RuntimeError(r.text or "claude_code failed")
     await emitter.emit(
-        EventType.FINAL,
-        {"text": final_text},
-        model=MODEL_TAG,
-        tokens=tokens,
-        cost_usd=cost,
+        EventType.FINAL, {"text": r.text}, model=MODEL_TAG, tokens=r.tokens, cost_usd=r.cost
     )
-    return final_text
+    return r.text
+
+
+async def chat_claude_code(
+    prompt: str, emitter: Emitter, cwd: str, inbox: "asyncio.Queue[str]"
+) -> str:
+    """Interactive Forge — a continuous conversation. Each turn resumes the CLI session so
+    Forge keeps full context (and the sandbox files persist on disk regardless). The run
+    stays alive between turns (no FINAL) waiting for the next reply from `inbox`; it emits
+    FINAL only when the user idles out or an error occurs. This is what makes Forge chattable
+    from the Fleet/Terminal instead of a one-shot."""
+    session: str | None = None
+    current = prompt
+    last_text = ""
+    while True:
+        r = await _run_turn(current, emitter, cwd, resume_session=session)
+        last_text = r.text or last_text
+        if r.session_id:
+            session = r.session_id
+        if r.is_error:
+            raise RuntimeError(r.text or "claude_code failed")
+
+        await emitter.emit(
+            EventType.LOG,
+            {"line": "● ready — reply to keep going, or leave it here.", "stream": "system"},
+            model=MODEL_TAG,
+        )
+        try:
+            current = await asyncio.wait_for(inbox.get(), timeout=_CHAT_IDLE_SECONDS)
+        except asyncio.TimeoutError:
+            break
+
+        # echo the user's reply into the terminal + trace, then run the next turn
+        await emitter.emit(EventType.LOG, {"line": f"› {current}", "stream": "cmd"}, model=MODEL_TAG)
+        await emitter.emit(
+            EventType.MESSAGE, {"role": "user", "text": current, "steer": True}, model="user"
+        )
+
+    await emitter.emit(EventType.FINAL, {"text": last_text}, model=MODEL_TAG)
+    return last_text
 
 
 # --- formatting helpers -----------------------------------------------------

@@ -39,6 +39,8 @@ export interface RunSnapshot {
   prompt: string;
   status: RunStatus;
   started_at: number;
+  workdir?: string | null;
+  interactive?: boolean; // claude_code: session stays open for a continuous chat
 }
 
 // The fleet feed carries two kinds of messages: a roster entry (a run), or an

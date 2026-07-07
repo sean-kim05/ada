@@ -70,7 +70,10 @@ async def spawn(req: SpawnRequest) -> dict:
     if req.agent_type not in registry.SPECS:
         return {"error": f"unknown agent_type: {req.agent_type}"}
     workdir = os.path.abspath(os.path.expanduser(req.workdir)) if req.workdir else None
-    run = supervisor.start(req.agent_type, req.prompt, workdir)
+    # Fleet-launched runs are interactive — a launched Forge stays open for a continuous
+    # chat. (Ada's own spawn_agent tool and Mission workers call supervisor.start directly
+    # and stay one-shot.)
+    run = supervisor.start(req.agent_type, req.prompt, workdir, interactive=True)
     return {"run_id": run.run_id}
 
 

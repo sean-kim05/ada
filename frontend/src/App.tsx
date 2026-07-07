@@ -1264,10 +1264,15 @@ function FleetView(p: FleetProps) {
     setTab(isCoder ? "terminal" : "trace");
   }, [focusId, isCoder]);
 
-  // Live steering: LLM-loop agents (Ada/Scout/Atlas) can take a mid-task message; a
-  // subprocess (Forge) or a finished run can't.
+  // Live steering: LLM-loop agents (Ada/Scout/Atlas) take a mid-task message injected into
+  // their running loop. An interactive Forge (claude_code) takes it as the next turn of a
+  // continuous conversation (its session resumes with full context). Either way it's the
+  // same endpoint; a finished run or a one-shot Forge can't take one.
   const steerable =
     !!focusRun && focusRun.status === "running" && ["ada", "researcher", "planner"].includes(focusRun.meta?.agent_type ?? "");
+  const forgeChat =
+    !!focusRun && focusRun.status === "running" && focusRun.meta?.agent_type === "claude_code" && !!focusRun.meta?.interactive;
+  const canMessage = steerable || forgeChat;
   const sendSteer = async () => {
     const txt = steerText.trim();
     if (!txt || !focusId) return;
@@ -1398,15 +1403,15 @@ function FleetView(p: FleetProps) {
             {focusRun && focusRun.events.map((e, i) => <TraceRow key={i} e={e} last={i === focusRun.events.length - 1} />)}
           </div>
         )}
-        {steerable && tab === "trace" && (
+        {canMessage && (
           <div style={{ flex: "none", borderTop: "1px solid var(--line)", background: "rgba(255,255,255,.015)", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ ...mono(9.5, "var(--accent)", ".1em"), fontWeight: 600, flex: "none" }}>STEER ▸</span>
+            <span style={{ ...mono(9.5, "var(--accent)", ".1em"), fontWeight: 600, flex: "none" }}>{forgeChat ? "REPLY ▸" : "STEER ▸"}</span>
             <input
               className="bare"
               value={steerText}
               onChange={(e) => setSteerText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && sendSteer()}
-              placeholder={`Message ${focusRun?.meta?.name ?? "agent"} while it works…`}
+              placeholder={forgeChat ? `Reply to ${focusRun?.meta?.name ?? "Forge"} — keep the conversation going…` : `Message ${focusRun?.meta?.name ?? "agent"} while it works…`}
               style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "8px 12px", color: "var(--text)", fontFamily: "var(--sans)", fontSize: 12.5 }}
             />
             <button
