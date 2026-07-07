@@ -1,5 +1,8 @@
 # secrets
 backend/.env
+backend/.google/
+*token.json
+*client_secret*.json
 # python
 backend/.venv/
 __pycache__/
