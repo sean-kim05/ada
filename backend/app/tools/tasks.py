@@ -1,39 +1,71 @@
-"""Tasks tool — the first real tool. In-memory for M1 so the loop works with zero
-external auth; swap the store for Postgres in M1 step 2. Tools are plain async functions
-registered on the agent in agents/ada.py."""
+"""Tasks tool — Postgres-backed (M1 step 2). These are the SAME async signatures the
+agent registered in registry.py, so Ada's secretary tools now persist for real: a task
+she adds in chat lands in Postgres and shows up in the deck's To-do panel. Store lives in
+app/db.py. The extra set_done/delete_task helpers back the REST API (routers/tasks.py)."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
-# In-memory store. Replace with a Postgres-backed repo later (same function signatures).
-_TASKS: dict[str, dict] = {}
+from app.db import get_pool
+
+
+def _row(r) -> dict:
+    """Map a DB row to the task dict shape the agent + frontend consume."""
+    return {
+        "id": r["id"],
+        "title": r["title"],
+        "due": r["due"],
+        "done": r["done"],
+        "created": r["created_at"].isoformat(timespec="seconds"),
+    }
 
 
 async def add_task(title: str, due: str | None = None) -> dict:
-    """Add a to-do. `due` is an optional ISO date string. Returns the created task."""
+    """Add a to-do. `due` is an optional free-text or ISO date string (e.g. "Today",
+    "2 PM", "2026-07-08"). Returns the created task."""
     task_id = uuid.uuid4().hex[:8]
-    task = {"id": task_id, "title": title, "due": due, "done": False,
-            "created": datetime.now().isoformat(timespec="seconds")}
-    _TASKS[task_id] = task
-    return task
+    async with get_pool().acquire() as conn:
+        r = await conn.fetchrow(
+            "INSERT INTO tasks (id, title, due) VALUES ($1, $2, $3) RETURNING *",
+            task_id, title, due,
+        )
+    return _row(r)
 
 
 async def list_tasks(include_done: bool = False) -> list[dict]:
-    """List tasks. By default only open ones."""
-    return [t for t in _TASKS.values() if include_done or not t["done"]]
+    """List tasks, newest first. By default only open (not-done) ones."""
+    q = "SELECT * FROM tasks"
+    if not include_done:
+        q += " WHERE NOT done"
+    q += " ORDER BY created_at DESC"
+    async with get_pool().acquire() as conn:
+        rows = await conn.fetch(q)
+    return [_row(r) for r in rows]
 
 
 async def complete_task(task_id: str) -> dict:
     """Mark a task done by id. Returns the updated task, or an error dict."""
-    t = _TASKS.get(task_id)
-    if not t:
-        return {"error": f"no task with id {task_id}"}
-    t["done"] = True
-    return t
+    return await set_done(task_id, True)
+
+
+async def set_done(task_id: str, done: bool) -> dict:
+    """Set a task's done state (True/False). Returns the updated task or an error dict."""
+    async with get_pool().acquire() as conn:
+        r = await conn.fetchrow(
+            "UPDATE tasks SET done = $2 WHERE id = $1 RETURNING *", task_id, done
+        )
+    return _row(r) if r else {"error": f"no task with id {task_id}"}
+
+
+async def delete_task(task_id: str) -> dict:
+    """Delete a task by id. Returns {deleted: id} or an error dict."""
+    async with get_pool().acquire() as conn:
+        r = await conn.fetchrow("DELETE FROM tasks WHERE id = $1 RETURNING id", task_id)
+    return {"deleted": task_id} if r else {"error": f"no task with id {task_id}"}
 
 
 async def current_time() -> str:
-    """The current local date and time. Handy first tool for testing the loop."""
+    """The current local date and time. Handy for the agent when reasoning about due dates."""
     return datetime.now().strftime("%A %Y-%m-%d %H:%M:%S")
