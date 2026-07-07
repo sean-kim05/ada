@@ -18,6 +18,7 @@ from app.agents.claude_code import drive_claude_code
 from app.agents.loop import drive
 from app.agents.mission import run_mission
 from app.config import settings
+from app.memory import conversation
 from app.runtime.bus import Emitter
 from app.runtime.events import EventType
 
@@ -35,7 +36,11 @@ class Run:
     status: RunStatus = "running"
     workdir: str | None = None  # claude_code: where it works (None → sandbox)
     result_text: str = ""       # final output, captured for mission synthesis
+    session_id: str | None = None  # set for chat runs → conversation memory (Redis)
     task: asyncio.Task | None = field(default=None, repr=False)
+    # Live steering: the supervisor drops mid-task user messages here; the drive loop
+    # drains it at each step boundary and injects them into the running agent.
+    steer_inbox: "asyncio.Queue[str]" = field(default_factory=asyncio.Queue, repr=False)
 
     def snapshot(self) -> dict:
         return {
@@ -60,9 +65,35 @@ class Supervisor:
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
 
-    def start(self, agent_type: str, prompt: str, workdir: str | None = None) -> Run:
+    def steer(self, run_id: str, text: str) -> dict:
+        """Send a mid-task message to a running agent. It's picked up at the agent's next
+        step and folded into its work (see loop.drive). Only LLM-loop agents (Ada + Fleet
+        workers) are live-steerable; a finished run or a subprocess run (claude_code) can't
+        take one."""
+        text = text.strip()
+        if not text:
+            return {"delivered": False, "reason": "empty message"}
+        run = self._runs.get(run_id)
+        if not run:
+            return {"delivered": False, "reason": "no such run"}
+        if run.status != "running":
+            return {"delivered": False, "reason": "run already finished"}
+        spec = registry.SPECS.get(run.agent_type)
+        if not spec or spec.driver != "llm":
+            return {"delivered": False, "reason": "this run type can't be steered live"}
+        run.steer_inbox.put_nowait(text)
+        return {"delivered": True}
+
+    def start(
+        self,
+        agent_type: str,
+        prompt: str,
+        workdir: str | None = None,
+        session_id: str | None = None,
+    ) -> Run:
         """Launch `agent_type` on `prompt` as a background run. Returns immediately.
-        `workdir` (claude_code only) is the directory the agent works in."""
+        `workdir` (claude_code only) is the directory the agent works in. `session_id`, if
+        set, gives the run conversation memory keyed by that session (chat)."""
         if agent_type not in registry.SPECS:
             raise ValueError(f"unknown agent_type: {agent_type}")
         run_id = uuid.uuid4().hex[:8]
@@ -75,14 +106,16 @@ class Supervisor:
             prompt=prompt,
             started_at=time.time(),
             workdir=workdir,
+            session_id=session_id,
         )
         self._runs[run_id] = run
         run.task = asyncio.create_task(self._drive(run))
         return run
 
-    def start_ada(self, prompt: str) -> Run:
-        """Convenience for the chat surface — the secretary is just agent type 'ada'."""
-        return self.start("ada", prompt)
+    def start_ada(self, prompt: str, session_id: str = "main") -> Run:
+        """Convenience for the chat surface — the secretary is agent type 'ada', with a
+        rolling conversation memory so she remembers the thread."""
+        return self.start("ada", prompt, session_id=session_id)
 
     def start_arena(self, topic: str, a_type: str, b_type: str, rounds: int = 3) -> Run:
         """Launch an Arena run — two agents talking. One run, MESSAGE events per turn."""
@@ -149,7 +182,13 @@ class Supervisor:
                 run.result_text = await drive_claude_code(run.prompt, emitter, cwd)
             else:
                 agent = registry.build(run.agent_type)
-                run.result_text = await drive(agent, run.prompt, emitter)
+                # Chat runs carry a rolling conversation; other runs are one-shot.
+                history = await conversation.load_history(run.session_id) if run.session_id else None
+                run.result_text, updated = await drive(
+                    agent, run.prompt, emitter, history, steer_inbox=run.steer_inbox
+                )
+                if run.session_id:
+                    await conversation.save_history(run.session_id, updated)
             run.status = "done"
         except Exception as exc:  # noqa: BLE001 - surface any failure as an event
             run.status = "error"

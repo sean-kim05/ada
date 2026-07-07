@@ -25,12 +25,17 @@ router = APIRouter()
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = "main"  # short-term memory key; a new value = a fresh conversation
 
 
 class SpawnRequest(BaseModel):
     agent_type: str
     prompt: str
     workdir: str | None = None  # claude_code: dir to work in (defaults to sandbox)
+
+
+class SteerRequest(BaseModel):
+    text: str  # a mid-task instruction for a running agent
 
 
 class ArenaRequest(BaseModel):
@@ -48,7 +53,7 @@ class MissionRequest(BaseModel):
 
 @router.post("/api/chat")
 async def chat(req: ChatRequest) -> dict:
-    run = supervisor.start_ada(req.message)
+    run = supervisor.start_ada(req.message, req.session_id)
     return {"run_id": run.run_id}
 
 
@@ -83,6 +88,13 @@ async def mission(req: MissionRequest) -> dict:
         return {"error": f"bad worker_type: {req.worker_type}"}
     run = supervisor.start_mission(req.goal, req.worker_type, max(1, min(5, req.max_tasks)))
     return {"run_id": run.run_id}
+
+
+@router.post("/api/runs/{run_id}/steer")
+async def steer(run_id: str, req: SteerRequest) -> dict:
+    """Talk to a running agent mid-task — the message is injected into its live run so it
+    can adjust course. Returns { delivered: bool, reason? }."""
+    return supervisor.steer(run_id, req.text)
 
 
 @router.get("/api/runs")

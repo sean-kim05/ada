@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import chat
+from app.db import close_db, init_db
+from app.routers import calendar, chat, memory, router, tasks
 
-app = FastAPI(title="Ada")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Bring up the Postgres pool + schema before serving; close it on shutdown.
+    await init_db()
+    yield
+    await close_db()
+
+
+app = FastAPI(title="Ada", lifespan=lifespan)
 
 # Dev: Vite runs on 5173. Localhost only — Ada can run commands on your machine.
 app.add_middleware(
@@ -19,6 +31,10 @@ app.add_middleware(
 )
 
 app.include_router(chat.router)
+app.include_router(tasks.router)
+app.include_router(calendar.router)
+app.include_router(memory.router)
+app.include_router(router.router)
 
 
 @app.get("/health")
