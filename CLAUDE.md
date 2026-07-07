@@ -31,8 +31,52 @@ Design docs: `ARCHITECTURE.md`, `ROADMAP.md`. Deck design reference: `Ada-standa
 - Every persona has a distinct **identity** (glyph + colour): Ada=amber spark, Scout=cyan
   lens, Atlas=violet checklist, Forge=green code-brackets — surfaced in Fleet/Arena/launcher.
 
-M1/M2 brains run on Haiku; M3 runs the `claude` CLI's default model (Opus). Deck's
-Calendar / To-do / Reminders are still **demo data** (M1 tail).
+M1/M2 brains run on Haiku; M3 runs the `claude` CLI's default model (Opus).
+
+**M1 substance is now real (2026-07-06 — "make the secretary real" pass):**
+- **Tasks** persist to **Postgres** (`db.py` pool + schema; `tools/tasks.py` on Postgres; REST
+  at `/api/tasks`). A task Ada adds in chat shows up in the deck's To-do panel and survives
+  restarts. This is real, verified end-to-end.
+- **Calendar** is wired to **real Google Calendar** (`tools/calendar.py` list/create/move via
+  the Calendar API; `/api/calendar/*`; the deck panel renders your real day). Needs a one-time
+  OAuth setup — see **`CALENDAR_SETUP.md`**. Until `backend/.google/token.json` exists, the tools
+  and panel show a friendly "not connected" state (no crash).
+- **Memory (short-term)** is real: Ada remembers the chat thread. Per-session history in Redis
+  (`memory/conversation.py`, key `ada:chat:{session}`, ~3-day TTL, trimmed to the recent tail),
+  replayed via pydantic-ai `message_history`. `loop.drive` now takes history + returns the updated
+  messages; `supervisor` loads/saves it for chat runs (session `"main"`). Verified: turn 2 recalls
+  turn 1. Non-chat runs (Fleet/Arena/Mission workers) stay one-shot (no session_id).
+- **Long-term memory + RAG (Qdrant)** is real — the M2 substance behind the "Docs/RAG" tab.
+  `memory/longterm.py` = Qdrant + in-process `fastembed` (BAAI/bge-small-en, no API key);
+  `tools/memory.py` gives Ada `remember`/`recall`; `/api/memory` REST; the **Docs view** lists /
+  searches / adds / deletes memories. Ada's instructions force a `recall` before she ever claims
+  not to know. Verified: she saves a fact and recalls it in a brand-new session.
+- **Local-model router (Claude ↔ Qwen) is real** — the "route cheap work off the bill" piece.
+  `agents/router.py` decides local-vs-cloud by work *kind* (LOCAL_KINDS = classify/summarize/
+  extract/triage/draft/rewrite → local Qwen on the 5080; everything else → cloud Claude), runs
+  it, and records cost/latency/$-saved per call. `agents/models.py` has both `local_complete`
+  (Ollama) and `cloud_complete` (a one-shot Claude). Ada's `summarize`/`classify` tools
+  (`tools/assistant.py`) go through it, so real subtasks run free on the GPU. `/api/router/stats`
+  + `/api/router/health` feed the **Router view** (model cards, offload %, $ saved, recent calls)
+  and the sidebar's LOCAL/API bar. Model = `qwen2.5:7b-instruct` (pulled; ~4.7GB; warm ~1s on the
+  5080). Verified end-to-end: Ada offloads a summarize to Qwen at $0, and the cloud branch
+  escalates correctly. **Ollama must be running** (`ollama serve`) — the panel shows "OLLAMA
+  OFFLINE" and the tools degrade gracefully if not.
+- **Live steering (talk to agents mid-task) is real** — runs are no longer fire-and-forget.
+  Every LLM-loop agent (Ada + Fleet: Scout/Atlas) runs as a steerable task: while it's
+  working you can send it a message and it adapts at its next step. Built on pydantic-ai 2.5's
+  native `run.enqueue(text, priority='asap')` (mid-run message injection — NOT an interrupt/
+  restart hack). `loop.drive` takes a `steer_inbox` (asyncio.Queue), drains it at each node
+  boundary → emits a MESSAGE(steer) event (shows in the trace as "YOU ▸") → `run.enqueue`s it.
+  `Run.steer_inbox` + `Supervisor.steer(run_id, text)` (validates running + llm-driver);
+  `POST /api/runs/{id}/steer {text}` → `{delivered, reason?}`. Registry appends `STEER_NOTE`
+  to every agent's instructions so they treat mid-task messages as top priority. Frontend:
+  Ada chat routes input to `steerRun` when a run is live (placeholder flips to "Steer Ada while
+  she works…"), else starts a new run; Fleet focused pane gets a STEER input on running,
+  steerable agents; TraceRow renders steer messages distinctly. Verified end-to-end: injected
+  "stop, say STEERED_STOP" mid-research → agent dropped its plan and obeyed. NOT steerable:
+  claude_code/Forge (subprocess) and finished runs — the endpoint refuses gracefully.
+- Still demo: **Reminders** panel. Not built yet: **Gmail** (needs the Google OAuth).
 
 ## Run it
 
@@ -47,6 +91,9 @@ cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 # 3. frontend
 cd frontend && npm run dev         # → http://localhost:5173
+
+# 4. local model (for the router / Ada's cheap subtasks) — needs GPU (WSL CUDA passthrough works)
+ollama serve &                     # → :11434;  first time: ollama pull qwen2.5:7b-instruct
 ```
 
 Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-haiku-4-5"}`.
