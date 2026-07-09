@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.config import settings
 from app.runtime.bus import Emitter
@@ -39,20 +39,105 @@ class TurnResult:
     is_error: bool
 
 
-async def _run_turn(
-    prompt: str, emitter: Emitter, cwd: str, resume_session: str | None = None
-) -> TurnResult:
+@dataclass
+class _Stream:
+    """Mutable state threaded through a Claude Code output stream. For a one-shot run it
+    lives for one turn; for an interactive session it persists across turns (so the session
+    id, the tool-name map, and the once-only banner survive from one reply to the next)."""
+    tool_names: dict[str, str] = field(default_factory=dict)  # tool_use_id -> tool name
+    session_id: str | None = None
+    final_text: str = ""
+    tokens: int | None = None
+    cost: float | None = None
+    is_error: bool = False
+    banner_shown: bool = False
+
+
+async def _pump_event(evt: dict, emitter: Emitter, st: _Stream, cwd: str) -> bool:
+    """Translate ONE stream-json event into AgentEvents, mutating `st`. Returns True when the
+    event is the turn's terminating `result`. The CLI re-emits a system/init at the head of
+    every turn (even within one persistent session), so the '● session started' banner is
+    shown only the first time — that's what makes an interactive session read as one chat."""
+    t = evt.get("type")
+
+    if t == "system" and evt.get("subtype") == "init":
+        st.session_id = evt.get("session_id") or st.session_id
+        if not st.banner_shown:
+            st.banner_shown = True
+            model = evt.get("model", "?")
+            await emitter.emit(
+                EventType.LOG,
+                {"line": f"● session started · {model} · {cwd}", "stream": "system"},
+                model=MODEL_TAG,
+            )
+
+    elif t == "assistant":
+        for b in evt.get("message", {}).get("content", []):
+            bt = b.get("type")
+            if bt == "text":
+                text = (b.get("text") or "").strip()
+                if text:
+                    await emitter.emit(EventType.LOG, {"line": text, "stream": "assistant"}, model=MODEL_TAG)
+            elif bt == "tool_use":
+                name = b.get("name", "?")
+                st.tool_names[b.get("id", "")] = name
+                inp = b.get("input", {})
+                await emitter.emit(
+                    EventType.LOG,
+                    {"line": f"⏺ {name}({_summarize_input(inp)})", "stream": "tool"},
+                    model=MODEL_TAG,
+                )
+                await emitter.emit(EventType.TOOL_CALL, {"tool": name, "input": inp}, model=MODEL_TAG)
+            # 'thinking' blocks are intentionally not surfaced
+
+    elif t == "user":
+        for b in evt.get("message", {}).get("content", []):
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                name = st.tool_names.get(b.get("tool_use_id", ""), "tool")
+                out = _stringify(b.get("content"))
+                await emitter.emit(
+                    EventType.LOG,
+                    {"line": f"  ⎿ {_trunc(out, 110)}", "stream": "result"},
+                    model=MODEL_TAG,
+                )
+                await emitter.emit(
+                    EventType.TOOL_RESULT,
+                    {"tool": name, "output": _trunc(out, 300)},
+                    model=MODEL_TAG,
+                )
+
+    elif t == "result":
+        st.final_text = str(evt.get("result") or "")
+        st.is_error = bool(evt.get("is_error"))
+        st.cost = evt.get("total_cost_usd")
+        usage = evt.get("usage") or {}
+        st.tokens = sum(
+            int(usage.get(k) or 0)
+            for k in (
+                "input_tokens", "output_tokens",
+                "cache_read_input_tokens", "cache_creation_input_tokens",
+            )
+        ) or None
+        return True
+
+    # rate_limit_event and anything else: ignored
+    return False
+
+
+def _user_line(text: str) -> bytes:
+    """A single stream-json user message, newline-terminated — one turn of input."""
+    return (json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n").encode()
+
+
+async def _run_turn(prompt: str, emitter: Emitter, cwd: str) -> TurnResult:
     """Run ONE headless Claude Code turn and stream it as AgentEvents (LOG/TOOL_CALL/
-    TOOL_RESULT). Captures the CLI session id (for --resume) and the turn's result/usage,
-    but does NOT emit FINAL — the caller decides whether the run is over. `resume_session`
-    continues a prior conversation so Forge keeps full context across turns."""
+    TOOL_RESULT). Captures the turn's result/usage but does NOT emit FINAL — the caller
+    decides whether the run is over."""
     cmd = [
         settings.claude_bin, "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--dangerously-skip-permissions",  # scoped to the sandbox dir (see module docstring)
     ]
-    if resume_session:
-        cmd += ["--resume", resume_session]
     if settings.claude_code_model:
         cmd += ["--model", settings.claude_code_model]
 
@@ -71,13 +156,7 @@ async def _run_turn(
     )
     assert proc.stdout is not None
 
-    tool_names: dict[str, str] = {}   # tool_use_id -> tool name
-    final_text = ""
-    session_id: str | None = None
-    tokens: int | None = None
-    cost: float | None = None
-    is_error = False
-
+    st = _Stream()
     async for raw in proc.stdout:
         line = raw.decode(errors="replace").strip()
         if not line:
@@ -88,73 +167,13 @@ async def _run_turn(
             # a plain warning/log line the CLI printed — surface it dimly
             await emitter.emit(EventType.LOG, {"line": line, "stream": "stderr"}, model=MODEL_TAG)
             continue
-
-        t = evt.get("type")
-
-        if t == "system" and evt.get("subtype") == "init":
-            session_id = evt.get("session_id") or session_id
-            model = evt.get("model", "?")
-            await emitter.emit(
-                EventType.LOG,
-                {"line": f"● session started · {model} · {cwd}", "stream": "system"},
-                model=MODEL_TAG,
-            )
-
-        elif t == "assistant":
-            for b in evt.get("message", {}).get("content", []):
-                bt = b.get("type")
-                if bt == "text":
-                    text = (b.get("text") or "").strip()
-                    if text:
-                        await emitter.emit(EventType.LOG, {"line": text, "stream": "assistant"}, model=MODEL_TAG)
-                elif bt == "tool_use":
-                    name = b.get("name", "?")
-                    tool_names[b.get("id", "")] = name
-                    inp = b.get("input", {})
-                    await emitter.emit(
-                        EventType.LOG,
-                        {"line": f"⏺ {name}({_summarize_input(inp)})", "stream": "tool"},
-                        model=MODEL_TAG,
-                    )
-                    await emitter.emit(EventType.TOOL_CALL, {"tool": name, "input": inp}, model=MODEL_TAG)
-                # 'thinking' blocks are intentionally not surfaced
-
-        elif t == "user":
-            for b in evt.get("message", {}).get("content", []):
-                if isinstance(b, dict) and b.get("type") == "tool_result":
-                    name = tool_names.get(b.get("tool_use_id", ""), "tool")
-                    out = _stringify(b.get("content"))
-                    await emitter.emit(
-                        EventType.LOG,
-                        {"line": f"  ⎿ {_trunc(out, 110)}", "stream": "result"},
-                        model=MODEL_TAG,
-                    )
-                    await emitter.emit(
-                        EventType.TOOL_RESULT,
-                        {"tool": name, "output": _trunc(out, 300)},
-                        model=MODEL_TAG,
-                    )
-
-        elif t == "result":
-            final_text = str(evt.get("result") or "")
-            is_error = bool(evt.get("is_error"))
-            cost = evt.get("total_cost_usd")
-            usage = evt.get("usage") or {}
-            tokens = sum(
-                int(usage.get(k) or 0)
-                for k in (
-                    "input_tokens", "output_tokens",
-                    "cache_read_input_tokens", "cache_creation_input_tokens",
-                )
-            ) or None
-
-        # rate_limit_event and anything else: ignored
+        await _pump_event(evt, emitter, st, cwd)
 
     rc = await proc.wait()
-    if rc != 0 and not final_text:
-        is_error = True
-        final_text = f"claude_code exited with code {rc}"
-    return TurnResult(final_text, session_id, tokens, cost, is_error)
+    if rc != 0 and not st.final_text:
+        st.is_error = True
+        st.final_text = f"claude_code exited with code {rc}"
+    return TurnResult(st.final_text, st.session_id, st.tokens, st.cost, st.is_error)
 
 
 async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
@@ -173,38 +192,104 @@ async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
 async def chat_claude_code(
     prompt: str, emitter: Emitter, cwd: str, inbox: "asyncio.Queue[str]"
 ) -> str:
-    """Interactive Forge — a continuous conversation. Each turn resumes the CLI session so
-    Forge keeps full context (and the sandbox files persist on disk regardless). The run
-    stays alive between turns (no FINAL) waiting for the next reply from `inbox`; it emits
-    FINAL only when the user idles out or an error occurs. This is what makes Forge chattable
-    from the Fleet/Terminal instead of a one-shot."""
-    session: str | None = None
-    current = prompt
+    """Interactive Forge — ONE long-lived Claude Code process: a single continuous session,
+    not a re-spawn per reply. Each user turn is written to the process's stdin as a stream-json
+    message; context and sandbox files persist natively. The run stays alive between turns (no
+    FINAL) waiting for the next reply from `inbox`; it emits FINAL only when the user idles out,
+    the session errors, or the process exits. This is what makes Forge feel like one chat you
+    keep talking to instead of a one-shot."""
+    cmd = [
+        settings.claude_bin, "-p",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",  # scoped to the sandbox dir (see module docstring)
+    ]
+    if settings.claude_code_model:
+        cmd += ["--model", settings.claude_code_model]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=cwd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+
+    async def send(text: str) -> None:
+        proc.stdin.write(_user_line(text))
+        await proc.stdin.drain()
+
+    async def read_one_turn(st: _Stream) -> bool:
+        """Read stdout up to (and including) the turn's `result`. False if the process died."""
+        while True:
+            raw = await proc.stdout.readline()
+            if not raw:
+                return False  # EOF — the process is gone
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                await emitter.emit(EventType.LOG, {"line": line, "stream": "stderr"}, model=MODEL_TAG)
+                continue
+            if await _pump_event(evt, emitter, st, cwd):
+                return True
+
+    st = _Stream()
     last_text = ""
-    while True:
-        r = await _run_turn(current, emitter, cwd, resume_session=session)
-        last_text = r.text or last_text
-        if r.session_id:
-            session = r.session_id
-        if r.is_error:
-            raise RuntimeError(r.text or "claude_code failed")
+    await emitter.emit(
+        EventType.LOG, {"line": f"$ claude · interactive session · {cwd}", "stream": "cmd"}, model=MODEL_TAG
+    )
+    await emitter.emit(EventType.LOG, {"line": f"› {_trunc(prompt, 100)}", "stream": "cmd"}, model=MODEL_TAG)
 
-        await emitter.emit(
-            EventType.LOG,
-            {"line": "● ready — reply to keep going, or leave it here.", "stream": "system"},
-            model=MODEL_TAG,
-        )
-        try:
-            current = await asyncio.wait_for(inbox.get(), timeout=_CHAT_IDLE_SECONDS)
-        except asyncio.TimeoutError:
-            break
+    try:
+        await send(prompt)
+        while True:
+            # Each turn overwrites st.final_text/is_error; session_id + banner persist.
+            st.final_text = ""
+            st.is_error = False
+            alive = await read_one_turn(st)
+            if not alive:
+                st.is_error = True
+                st.final_text = st.final_text or "claude_code session ended unexpectedly"
+                break
+            last_text = st.final_text or last_text
+            if st.is_error:
+                break
 
-        # echo the user's reply into the terminal + trace, then run the next turn
-        await emitter.emit(EventType.LOG, {"line": f"› {current}", "stream": "cmd"}, model=MODEL_TAG)
-        await emitter.emit(
-            EventType.MESSAGE, {"role": "user", "text": current, "steer": True}, model="user"
-        )
+            await emitter.emit(
+                EventType.LOG,
+                {"line": "● ready — reply to keep going, or leave it here.", "stream": "system"},
+                model=MODEL_TAG,
+            )
+            try:
+                nxt = await asyncio.wait_for(inbox.get(), timeout=_CHAT_IDLE_SECONDS)
+            except asyncio.TimeoutError:
+                break
 
+            # echo the user's reply into the terminal + trace, then feed it to the live session
+            await emitter.emit(EventType.LOG, {"line": f"› {nxt}", "stream": "cmd"}, model=MODEL_TAG)
+            await emitter.emit(
+                EventType.MESSAGE, {"role": "user", "text": nxt, "steer": True}, model="user"
+            )
+            await send(nxt)
+    finally:
+        # Close the session down cleanly on any exit path (idle-out, error, cancel).
+        if proc.returncode is None:
+            try:
+                proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                proc.kill()
+
+    if st.is_error:
+        raise RuntimeError(st.final_text or "claude_code failed")
     await emitter.emit(EventType.FINAL, {"text": last_text}, model=MODEL_TAG)
     return last_text
 
