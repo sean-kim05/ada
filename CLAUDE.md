@@ -162,35 +162,36 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
   tool `workdir`, or the Fleet launcher DIR field) — defaults to the sandbox, validated to
   exist. This is what makes Forge usable for real work (build in `~/dev/mysite`, contribute
   to a cloned OSS repo, etc.).
-- **Interactive Forge (continuous chat) — WORKING via resume-per-turn; UX follow-up pending.**
+- **Interactive Forge (continuous chat) — one genuinely continuous session (done 2026-07-09).**
   Fleet-launched Forge runs are `interactive`: the session stays open for a back-and-forth
-  instead of a one-shot. `chat_claude_code` loops turns, resuming the CLI session each turn
-  (`claude -p <msg> --resume <session_id>`, session id captured from the `system/init` event) so
-  Forge keeps full context; the sandbox files persist regardless. The run stays `running` between
-  turns (no FINAL) draining `Run.steer_inbox` for replies; FINAL fires only on idle-out (15 min)
-  or error. `_run_turn` is the shared per-turn runner (emits LOG/TOOL_* but not FINAL);
-  `drive_claude_code` (one-shot) still wraps it for Ada's `spawn_agent` delegate + Mission
-  workers (they call `supervisor.start` with `interactive=False`). Reply via
+  instead of a one-shot. `chat_claude_code` spawns **ONE long-lived process** —
+  `claude -p --input-format stream-json --output-format stream-json --verbose
+  --dangerously-skip-permissions` — and writes each user turn to its stdin as a stream-json line
+  (`{"type":"user","message":{"role":"user","content":"…"}}`). Context + sandbox files persist
+  natively in that single process; there is no `--resume` re-spawn. The run stays `running`
+  between turns (no FINAL) draining `Run.steer_inbox` for replies; FINAL fires only on idle-out
+  (15 min), error, or the process exiting. Per-event parsing is shared via
+  `_pump_event(evt, emitter, st, cwd) -> bool` (returns True on the turn's `result`) + a
+  `_Stream` state dataclass, used by both the one-shot `_run_turn` (`drive_claude_code`, for
+  Ada's `spawn_agent` delegate + Mission workers — they call `supervisor.start(interactive=False)`)
+  and the interactive `chat_claude_code`. The CLI re-emits `system/init` at the head of **every**
+  turn even in one process (same session id), so the `● session started` banner is gated behind
+  `st.banner_shown` to print ONCE — that's what makes it read as a single chat. Reply via
   `POST /api/runs/{id}/steer` (same endpoint as LLM steering; the supervisor routes an
-  interactive-Forge message to its next turn). Frontend: the Fleet focused pane shows a **REPLY**
-  box for running interactive claude_code runs. Verified: told a launched Forge a secret, it
-  stayed alive, a follow-up resumed and recalled it (context genuinely carries across turns).
-  - **KNOWN UX GAP (next task):** because each reply RE-SPAWNS `claude -p --resume`, the terminal
-    re-prints `$ claude -p …` + `● session started` every turn, so it *looks* like a new chat
-    each message even though context is preserved. Two ways to make it feel like one seamless
-    session: (a) cheap — suppress the `$ claude -p`/`session started` banner on resumed turns
-    (turn index > 0) in `chat_claude_code`/`_run_turn`, showing just the reply + response; or
-    (b) proper — switch to ONE long-lived process using `claude -p --input-format stream-json
-    --output-format stream-json` (write each user turn as a stream-json line to stdin, read
-    responses continuously; `--replay-user-messages` echoes them back). (b) is the real
-    "continuous session" and removes re-spawn latency, but needs concurrent stdin-writer /
-    stdout-reader tasks + turn-boundary detection on the `result` event. Start with (a) if short
-    on time, then do (b). Note: `claude -p --dangerously-skip-permissions` can't be run from the
-    Claude Code Bash tool directly (auto-mode classifier blocks it) — test Forge via the backend
-    API / a spawned run, where the subprocess runs unblocked.
-- Invoked as: `claude -p <prompt> --output-format stream-json --verbose
+  interactive-Forge message to its next turn by writing to stdin). Frontend: the Fleet focused
+  pane shows a **REPLY** box (`forgeChat`/`canMessage` in App.tsx) under BOTH the Terminal and
+  Trace tabs for a running interactive claude_code run. Verified E2E through the API 2026-07-09:
+  spawn interactive Forge → steer a follow-up mid-session → exactly ONE session banner and it
+  recalled the turn-1 codeword purely from conversation (no file read).
+  - Note: `claude -p --dangerously-skip-permissions` can't be run from the Claude Code Bash tool
+    directly (auto-mode classifier blocks it) — test Forge via the backend API / a spawned run,
+    where the subprocess runs unblocked. BUT plain `claude -p --input-format stream-json` *without*
+    the dangerous flag runs fine from the Bash tool, which is enough to de-risk the wire format.
+- Invoked (one-shot) as: `claude -p <prompt> --output-format stream-json --verbose
   --dangerously-skip-permissions [--model …]`, `cwd=sandbox_dir`, `stdin=DEVNULL` (skips the
-  CLI's 3s "no stdin" wait). Skip-permissions is acceptable **because** it's sandbox-scoped.
+  CLI's 3s "no stdin" wait). The interactive path drops the `<prompt>` arg and adds
+  `--input-format stream-json` with `stdin=PIPE`, feeding turns as stream-json lines instead.
+  Skip-permissions is acceptable **because** it's sandbox-scoped.
 - `stream-json` shapes we parse: `system/init` (model, cwd), `assistant` (content blocks:
   `text` / `tool_use` / `thinking`-ignored), `user` (`tool_result` blocks), `result`
   (`result` text, `total_cost_usd`, `usage`, `is_error`). `rate_limit_event` ignored.
