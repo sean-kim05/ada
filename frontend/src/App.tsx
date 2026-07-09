@@ -2,6 +2,10 @@ import { useState, useRef, useEffect, type CSSProperties } from "react";
 import {
   startRun,
   steerRun,
+  stopRun,
+  restartRun,
+  getRunDiff,
+  listRepos,
   spawnAgent,
   listAgents,
   openFleet,
@@ -26,6 +30,8 @@ import {
   type AgentType,
   type RunSnapshot,
   type RunStatus,
+  type RunDiff,
+  type Repo,
   type FleetMsg,
   type ArenaMsg,
 } from "./lib/ada";
@@ -1243,8 +1249,12 @@ interface FleetProps {
   clock: number;
 }
 function FleetView(p: FleetProps) {
-  const [tab, setTab] = useState<"trace" | "terminal">("trace");
+  const [tab, setTab] = useState<"trace" | "terminal" | "diff">("trace");
   const [steerText, setSteerText] = useState("");
+  const [repos, setRepos] = useState<Repo[]>([]);
+  useEffect(() => {
+    listRepos().then(setRepos).catch(() => {});
+  }, []);
   const runs = Object.entries(p.fleet)
     .map(([id, r]) => ({ id, ...r }))
     .sort((a, b) => {
@@ -1263,6 +1273,20 @@ function FleetView(p: FleetProps) {
   useEffect(() => {
     setTab(isCoder ? "terminal" : "trace");
   }, [focusId, isCoder]);
+  const tabList: Array<"trace" | "terminal" | "diff"> = isCoder
+    ? ["terminal", "trace", "diff"]
+    : ["trace", "terminal"];
+
+  // Mission-control verbs for the focused agent: kill a runaway, relaunch a finished one.
+  const restartable = !!focusRun && ["ada", "researcher", "planner", "claude_code"].includes(focusRun.meta?.agent_type ?? "");
+  const onStop = async () => {
+    if (focusId) await stopRun(focusId);
+  };
+  const onRestart = async () => {
+    if (!focusId) return;
+    const r = await restartRun(focusId);
+    if (r.run_id) p.setFocused(r.run_id);
+  };
 
   // Live steering: LLM-loop agents (Ada/Scout/Atlas) take a mid-task message injected into
   // their running loop. An interactive Forge (claude_code) takes it as the next turn of a
@@ -1338,16 +1362,41 @@ function FleetView(p: FleetProps) {
             </button>
           </div>
           {p.launchType === "claude_code" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={mono(10, "var(--text-faint)", ".08em")}>DIR</span>
-              <input
-                className="bare"
-                value={p.launchDir}
-                onChange={(e) => p.setLaunchDir(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && p.onLaunch()}
-                placeholder="working dir — optional, defaults to sandbox (e.g. ~/dev/mysite)"
-                style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "8px 12px", color: "var(--text)", fontFamily: "var(--mono)", fontSize: 11.5 }}
-              />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={mono(10, "var(--text-faint)", ".08em")}>DIR</span>
+                <input
+                  className="bare"
+                  value={p.launchDir}
+                  onChange={(e) => p.setLaunchDir(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && p.onLaunch()}
+                  placeholder="working dir — optional, defaults to sandbox (e.g. ~/dev/mysite)"
+                  style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "8px 12px", color: "var(--text)", fontFamily: "var(--mono)", fontSize: 11.5 }}
+                />
+                {p.launchDir && (
+                  <button className="btn-ghost" onClick={() => p.setLaunchDir("")} style={{ ...mono(9.5, "var(--text-faint)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 7, padding: "6px 9px", cursor: "pointer", flex: "none" }}>
+                    SANDBOX
+                  </button>
+                )}
+              </div>
+              {repos.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 70, overflowY: "auto", paddingRight: 2 }}>
+                  {repos.map((rp) => {
+                    const on = p.launchDir === rp.path;
+                    return (
+                      <button
+                        key={rp.path}
+                        className="btn-ghost"
+                        onClick={() => p.setLaunchDir(rp.path)}
+                        title={rp.path}
+                        style={{ ...mono(10, on ? "var(--text)" : "var(--text-faint)", ".02em"), background: on ? "rgba(var(--accent-rgb),.08)" : "transparent", border: `1px solid ${on ? "rgba(var(--accent-rgb),.4)" : "var(--line-2)"}`, borderRadius: 7, padding: "4px 9px", cursor: "pointer" }}
+                      >
+                        {rp.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1366,7 +1415,7 @@ function FleetView(p: FleetProps) {
       <div style={{ ...panel, boxShadow: "inset 0 1px 0 rgba(255,255,255,.03), 0 1px 2px rgba(0,0,0,.45), 0 0 40px -20px rgba(var(--accent-rgb),.3)" }}>
         <div style={phead}>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {(["trace", "terminal"] as const).map((tb) => (
+            {tabList.map((tb) => (
               <span
                 key={tb}
                 onClick={() => setTab(tb)}
@@ -1378,17 +1427,45 @@ function FleetView(p: FleetProps) {
                   background: tab === tb ? "rgba(255,255,255,.05)" : "transparent",
                 }}
               >
-                {tb === "trace" ? "TRACE" : "TERMINAL"}
+                {tb.toUpperCase()}
               </span>
             ))}
           </div>
-          {focusRun?.meta && (
-            <span style={mono(10, "var(--text-faint)")}>
-              {focusRun.meta.name} · {focusId}
-            </span>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {focusRun?.status === "running" && (
+              <button
+                className="btn-ghost"
+                onClick={onStop}
+                title="Kill this agent"
+                style={{ ...mono(9.5, "var(--red)", ".08em"), background: "rgba(255,138,128,.07)", border: "1px solid rgba(255,138,128,.3)", borderRadius: 7, padding: "4px 9px", cursor: "pointer" }}
+              >
+                ■ STOP
+              </button>
+            )}
+            {focusRun && focusRun.status !== "running" && restartable && (
+              <button
+                className="btn-ghost"
+                onClick={onRestart}
+                title="Relaunch with the same task"
+                style={{ ...mono(9.5, "var(--accent)", ".08em"), background: "rgba(var(--accent-rgb),.07)", border: "1px solid rgba(var(--accent-rgb),.3)", borderRadius: 7, padding: "4px 9px", cursor: "pointer" }}
+              >
+                ↻ RESTART
+              </button>
+            )}
+            {focusRun?.meta && (
+              <span style={mono(10, "var(--text-faint)")}>
+                {focusRun.meta.name} · {focusId}
+              </span>
+            )}
+          </div>
         </div>
-        {tab === "terminal" ? (
+        {tab === "diff" ? (
+          focusRun && focusId ? (
+            <DiffPanel runId={focusId} status={focusRun.status} tools={focusRun.tools} />
+          ) : (
+            <div style={{ flex: 1, ...mono(12, "var(--text-faint)"), padding: "18px 16px" }}>Select an agent to review its changes.</div>
+          )
+        ) : tab === "terminal" ? (
           focusRun ? (
             <TerminalPanel run={focusRun} />
           ) : (
@@ -1455,11 +1532,16 @@ function FleetCard({ id, run, focused, onClick, clock }: { id: string; run: Flee
         </span>
       </div>
       <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.4, minHeight: 34, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{meta?.prompt ?? id}</div>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, ...mono(10.5, "var(--text-faint)") }}>
-        <span>{run.tools} tools</span>
-        <span>·</span>
+      {meta?.agent_type === "claude_code" && meta?.workdir && (
+        <div style={{ ...mono(10, "var(--text-faint)", ".02em"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={meta.workdir}>
+          ▸ {shortPath(meta.workdir)}
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", ...mono(10.5, "var(--text-faint)") }}>
         <span>{run.events.length} steps</span>
-        <span style={{ marginLeft: "auto" }}>{elapsed}s</span>
+        {!!meta?.tokens && <span>· {fmtTokens(meta.tokens)} tok</span>}
+        {!!meta?.cost_usd && <span>· ${meta.cost_usd.toFixed(3)}</span>}
+        <span style={{ marginLeft: "auto" }}>{fmtUptime(elapsed)}</span>
       </div>
       {run.lastStep && (
         <div style={{ ...mono(10.5, run.status === "running" ? "var(--accent)" : "var(--text-faint)"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{run.lastStep}</div>
@@ -1500,6 +1582,94 @@ function TerminalPanel({ run }: { run: FleetRun }) {
   );
 }
 
+// The Diff panel — what a coding agent changed in its workdir. Auto-refreshes as the agent
+// runs tools (the `tools` count changes) and can be refreshed by hand. This is the "review
+// what it did" half of managing an agent.
+function DiffPanel({ runId, status, tools }: { runId: string; status: RunStatus; tools: number }) {
+  const [diff, setDiff] = useState<RunDiff | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true);
+    try {
+      setDiff(await getRunDiff(runId));
+    } catch {
+      /* ignore transient fetch errors */
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    load();
+    // refetch when the run advances (new tool call) or ends
+  }, [runId, status, tools]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const files = diff?.files ?? [];
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 14px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
+        <span style={mono(9.5, "var(--text-faint)", ".12em")}>{diff?.is_git ? `${files.length} CHANGED` : "WORKDIR"}</span>
+        {files.slice(0, 8).map((f) => (
+          <span key={f.path} style={{ ...mono(10, diffStatusColor(f.status)), display: "inline-flex", gap: 4, alignItems: "baseline" }} title={f.path}>
+            <b>{f.status}</b>
+            {basename(f.path)}
+          </span>
+        ))}
+        {files.length > 8 && <span style={mono(10, "var(--text-faint)")}>+{files.length - 8} more</span>}
+        <button
+          className="btn-ghost"
+          onClick={load}
+          style={{ marginLeft: "auto", ...mono(9.5, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "4px 9px", cursor: "pointer", flex: "none" }}
+        >
+          {loading ? "…" : "↻ REFRESH"}
+        </button>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", background: "#050506", borderRadius: "0 0 13px 13px" }}>
+        {!diff && <div style={mono(11.5, "var(--text-faint)")}>loading diff…</div>}
+        {diff && !diff.is_git && <div style={mono(11.5, "var(--text-faint)")}>{diff.error ?? "not a git repo — nothing to diff"}</div>}
+        {diff && diff.is_git && files.length === 0 && (
+          <div style={mono(11.5, "var(--text-faint)")}>No changes yet — the agent hasn't touched any files.</div>
+        )}
+        {diff?.diff &&
+          diff.diff.split("\n").map((line, i) => (
+            <div key={i} style={{ ...mono(11, diffLineColor(line)), whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5 }}>
+              {line || " "}
+            </div>
+          ))}
+        {diff?.truncated && <div style={{ ...mono(10.5, "var(--text-faint)"), marginTop: 8 }}>… diff truncated</div>}
+      </div>
+    </div>
+  );
+}
+
+function basename(p: string): string {
+  const parts = p.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
+function shortPath(p: string): string {
+  const s = p.replace(/^\/home\/[^/]+/, "~");
+  const parts = s.split("/").filter(Boolean);
+  return parts.length > 3 ? parts[0] + "/…/" + parts.slice(-2).join("/") : s;
+}
+function fmtTokens(n: number): string {
+  return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+}
+function fmtUptime(s: number): string {
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+}
+function diffStatusColor(code: string): string {
+  if (code.includes("?") || code.includes("A")) return "#7ee787";
+  if (code.includes("D")) return "var(--red)";
+  if (code.includes("M") || code.includes("R")) return "rgba(var(--accent-rgb),.85)";
+  return "var(--text-dim)";
+}
+function diffLineColor(line: string): string {
+  if (line.startsWith("+")) return "#7ee787";
+  if (line.startsWith("-") && !line.startsWith("---")) return "var(--red)";
+  if (line.startsWith("@@")) return "rgba(var(--accent-rgb),.75)";
+  if (line.startsWith("diff --git") || line.startsWith("new file")) return "var(--text)";
+  return "var(--text-dim)";
+}
+
 function reduceFleet(prev: Record<string, FleetRun>, m: FleetMsg): Record<string, FleetRun> {
   const id = m.run_id;
   const cur: FleetRun = prev[id] ?? { meta: null, events: [], status: "running", tools: 0, lastStep: "" };
@@ -1511,7 +1681,7 @@ function reduceFleet(prev: Record<string, FleetRun>, m: FleetMsg): Record<string
   const events = [...cur.events, m];
   const meta = m.run ?? cur.meta;
   let status: RunStatus = cur.status;
-  if (m.type === "final") status = "done";
+  if (m.type === "final") status = m.payload?.stopped ? "stopped" : "done";
   else if (m.type === "error") status = "error";
   else status = "running";
   const tools = cur.tools + (m.type === "tool_call" ? 1 : 0);

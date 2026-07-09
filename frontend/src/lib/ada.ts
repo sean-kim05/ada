@@ -22,7 +22,7 @@ export interface AgentEvent {
   ts: number;
 }
 
-export type RunStatus = "running" | "done" | "error";
+export type RunStatus = "running" | "done" | "error" | "stopped";
 
 export interface AgentType {
   type: string;
@@ -41,6 +41,8 @@ export interface RunSnapshot {
   started_at: number;
   workdir?: string | null;
   interactive?: boolean; // claude_code: session stays open for a continuous chat
+  cost_usd?: number; // accumulated would-be cost across the run's turns
+  tokens?: number; // accumulated tokens across the run's turns
 }
 
 // The fleet feed carries two kinds of messages: a roster entry (a run), or an
@@ -91,6 +93,46 @@ export async function steerRun(runId: string, text: string): Promise<{ delivered
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
+  return r.json();
+}
+
+// Kill a running agent. Returns { stopped } — false if it already finished.
+export async function stopRun(runId: string): Promise<{ stopped: boolean; reason?: string }> {
+  const r = await fetch(`${API}/api/runs/${runId}/stop`, { method: "POST" });
+  return r.json();
+}
+
+// Relaunch an agent with the same task/workdir as a fresh run. Returns the new run id.
+export async function restartRun(runId: string): Promise<{ run_id?: string; error?: string }> {
+  const r = await fetch(`${API}/api/runs/${runId}/restart`, { method: "POST" });
+  return r.json();
+}
+
+// What a coding agent changed in its working directory (git diff of the run's workdir).
+export interface DiffFile {
+  path: string;
+  status: string; // git porcelain code: M, A, D, ??, R…
+}
+export interface RunDiff {
+  dir?: string;
+  is_git: boolean;
+  files: DiffFile[];
+  diff: string;
+  truncated?: boolean;
+  error?: string;
+}
+export async function getRunDiff(runId: string): Promise<RunDiff> {
+  const r = await fetch(`${API}/api/runs/${runId}/diff`);
+  return r.json();
+}
+
+// The user's real git repos — quick-launch targets for a coding agent.
+export interface Repo {
+  name: string;
+  path: string;
+}
+export async function listRepos(): Promise<Repo[]> {
+  const r = await fetch(`${API}/api/repos`);
   return r.json();
 }
 
