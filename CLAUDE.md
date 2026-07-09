@@ -196,8 +196,26 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
   `text` / `tool_use` / `thinking`-ignored), `user` (`tool_result` blocks), `result`
   (`result` text, `total_cost_usd`, `usage`, `is_error`). `rate_limit_event` ignored.
 - Cost: the `total_cost_usd` we surface is the **would-be** API cost — on Max it is NOT billed.
+  In a persistent interactive session each `result`'s `usage`/`total_cost_usd` is **per-turn**
+  (not cumulative — verified), so the run's `cost_usd`/`tokens` are the SUM over turns.
 - Ada can delegate to it via `spawn_agent("claude_code", task)` — this is the M3 magic
   ("Ada tells Claude Code to code"). Launchable directly from the Fleet too.
+
+### Agents terminal — managing Claude Code agents (mission-control)
+
+The Fleet is the "manage my Claude Code agents" surface. Beyond launch + watch + chat, you can:
+- **Stop** a run — `POST /api/runs/{id}/stop` → `Supervisor.stop()` cancels the task and emits a
+  terminal `FINAL{stopped:true}` (→ `RunStatus "stopped"`; `reduceFleet` honors the flag so it
+  doesn't read as "done"). `claude_code._run_turn` kills its child process in a `finally`, so a
+  stopped agent never orphans a `claude`.
+- **Restart** — `POST /api/runs/{id}/restart` → relaunch same type/prompt/workdir/interactive as
+  a fresh run (returns the new `run_id`). Not for arena/mission (not started via the generic path).
+- **Review the diff** — `GET /api/runs/{id}/diff` → `runtime/workspace.py::workspace_diff(cwd)`:
+  git status + tracked diff + inlined untracked/new files, all size-capped. This is the DIFF tab.
+- **Launch on a real repo** — `GET /api/repos` → `list_repos("~/dev")` (dirs with a `.git`), shown
+  as quick-pick chips in the Fleet launcher (workdir still defaults to the sandbox).
+- **Per-agent usage** — `Run.cost_usd`/`Run.tokens` accumulate via an `on_usage` callback the
+  claude_code drivers fire each turn; the snapshot carries them → cards show tokens · cost · uptime.
 
 ## Pydantic AI note (bit us once)
 
