@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.config import settings
@@ -157,32 +158,47 @@ async def _run_turn(prompt: str, emitter: Emitter, cwd: str) -> TurnResult:
     assert proc.stdout is not None
 
     st = _Stream()
-    async for raw in proc.stdout:
-        line = raw.decode(errors="replace").strip()
-        if not line:
-            continue
-        try:
-            evt = json.loads(line)
-        except json.JSONDecodeError:
-            # a plain warning/log line the CLI printed — surface it dimly
-            await emitter.emit(EventType.LOG, {"line": line, "stream": "stderr"}, model=MODEL_TAG)
-            continue
-        await _pump_event(evt, emitter, st, cwd)
+    try:
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                # a plain warning/log line the CLI printed — surface it dimly
+                await emitter.emit(EventType.LOG, {"line": line, "stream": "stderr"}, model=MODEL_TAG)
+                continue
+            await _pump_event(evt, emitter, st, cwd)
 
-    rc = await proc.wait()
-    if rc != 0 and not st.final_text:
-        st.is_error = True
-        st.final_text = f"claude_code exited with code {rc}"
-    return TurnResult(st.final_text, st.session_id, st.tokens, st.cost, st.is_error)
+        rc = await proc.wait()
+        if rc != 0 and not st.final_text:
+            st.is_error = True
+            st.final_text = f"claude_code exited with code {rc}"
+        return TurnResult(st.final_text, st.session_id, st.tokens, st.cost, st.is_error)
+    finally:
+        # If we're cancelled mid-turn (e.g. the user hits STOP), don't orphan the CLI process.
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
 
-async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
+UsageCb = Callable[[float | None, int | None], None]
+
+
+async def drive_claude_code(
+    prompt: str, emitter: Emitter, cwd: str, on_usage: UsageCb | None = None
+) -> str:
     """One-shot Forge — used when Ada delegates a task (spawn_agent) or a Mission worker runs.
     Emits FINAL on success and returns the final text; raises on failure so the supervisor's
     error path emits ERROR (mirrors the LLM loop's contract)."""
     r = await _run_turn(prompt, emitter, cwd)
     if r.is_error:
         raise RuntimeError(r.text or "claude_code failed")
+    if on_usage:
+        on_usage(r.cost, r.tokens)
     await emitter.emit(
         EventType.FINAL, {"text": r.text}, model=MODEL_TAG, tokens=r.tokens, cost_usd=r.cost
     )
@@ -190,7 +206,8 @@ async def drive_claude_code(prompt: str, emitter: Emitter, cwd: str) -> str:
 
 
 async def chat_claude_code(
-    prompt: str, emitter: Emitter, cwd: str, inbox: "asyncio.Queue[str]"
+    prompt: str, emitter: Emitter, cwd: str, inbox: "asyncio.Queue[str]",
+    on_usage: UsageCb | None = None,
 ) -> str:
     """Interactive Forge — ONE long-lived Claude Code process: a single continuous session,
     not a re-spawn per reply. Each user turn is written to the process's stdin as a stream-json
@@ -257,6 +274,8 @@ async def chat_claude_code(
                 st.final_text = st.final_text or "claude_code session ended unexpectedly"
                 break
             last_text = st.final_text or last_text
+            if on_usage:
+                on_usage(st.cost, st.tokens)  # per-turn usage folds into the run total
             if st.is_error:
                 break
 

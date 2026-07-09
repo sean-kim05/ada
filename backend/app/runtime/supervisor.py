@@ -22,7 +22,7 @@ from app.memory import conversation
 from app.runtime.bus import Emitter
 from app.runtime.events import EventType
 
-RunStatus = Literal["running", "done", "error"]
+RunStatus = Literal["running", "done", "error", "stopped"]
 
 
 @dataclass
@@ -38,10 +38,19 @@ class Run:
     interactive: bool = False   # claude_code: keep the session open for a continuous chat
     result_text: str = ""       # final output, captured for mission synthesis
     session_id: str | None = None  # set for chat runs → conversation memory (Redis)
+    cost_usd: float = 0.0       # accumulated would-be cost across the run's turns
+    tokens: int = 0             # accumulated tokens across the run's turns
     task: asyncio.Task | None = field(default=None, repr=False)
     # Live steering: the supervisor drops mid-task user messages here; the drive loop
     # drains it at each step boundary and injects them into the running agent.
     steer_inbox: "asyncio.Queue[str]" = field(default_factory=asyncio.Queue, repr=False)
+
+    def add_usage(self, cost: float | None, tokens: int | None) -> None:
+        """Fold one turn's usage into the run total (see claude_code on_usage callback)."""
+        if cost:
+            self.cost_usd += cost
+        if tokens:
+            self.tokens += tokens
 
     def snapshot(self) -> dict:
         return {
@@ -54,6 +63,8 @@ class Run:
             "started_at": self.started_at,
             "workdir": self.workdir,
             "interactive": self.interactive,
+            "cost_usd": round(self.cost_usd, 4) if self.cost_usd else 0,
+            "tokens": self.tokens,
         }
 
 
@@ -89,6 +100,38 @@ class Supervisor:
             run.steer_inbox.put_nowait(text)
             return {"delivered": True}
         return {"delivered": False, "reason": "this run type can't take messages"}
+
+    async def stop(self, run_id: str) -> dict:
+        """Kill a running agent. Cancels its task (which tears down any child process via the
+        driver's cleanup) and emits a terminal FINAL so the WS closes and the card flips to
+        'stopped'. Idempotent-ish: a finished run reports it can't be stopped."""
+        run = self._runs.get(run_id)
+        if not run:
+            return {"stopped": False, "reason": "no such run"}
+        if run.status != "running":
+            return {"stopped": False, "reason": "run already finished"}
+        run.status = "stopped"
+        if run.task:
+            run.task.cancel()
+        # Emit AFTER flipping status so the snapshot rides along as 'stopped'.
+        emitter = Emitter(run.run_id, run.agent_id)
+        await emitter.emit(EventType.FINAL, {"text": "■ stopped by user", "stopped": True}, model="user")
+        return {"stopped": True}
+
+    def restart(self, run_id: str) -> Run | None:
+        """Relaunch an agent with the same type/prompt/workdir as a brand-new run. Returns the
+        new Run, or None if the original is gone or isn't a relaunchable type (arena/mission
+        aren't started through the generic path)."""
+        run = self._runs.get(run_id)
+        if not run or run.agent_type not in registry.SPECS:
+            return None
+        return self.start(
+            run.agent_type,
+            run.prompt,
+            workdir=run.workdir,
+            session_id=run.session_id,
+            interactive=run.interactive,
+        )
 
     def start(
         self,
@@ -191,9 +234,13 @@ class Supervisor:
                     raise RuntimeError(f"working dir does not exist: {cwd}")
                 if run.interactive:
                     # a continuous Forge conversation — stays open for follow-up replies
-                    run.result_text = await chat_claude_code(run.prompt, emitter, cwd, run.steer_inbox)
+                    run.result_text = await chat_claude_code(
+                        run.prompt, emitter, cwd, run.steer_inbox, on_usage=run.add_usage
+                    )
                 else:
-                    run.result_text = await drive_claude_code(run.prompt, emitter, cwd)
+                    run.result_text = await drive_claude_code(
+                        run.prompt, emitter, cwd, on_usage=run.add_usage
+                    )
             else:
                 agent = registry.build(run.agent_type)
                 # Chat runs carry a rolling conversation; other runs are one-shot.

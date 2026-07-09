@@ -16,9 +16,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.agents import registry
+from app.config import settings
 from app.runtime.bus import subscribe, subscribe_all
 from app.runtime.events import EventType
 from app.runtime.supervisor import supervisor
+from app.runtime.workspace import list_repos, workspace_diff
 
 router = APIRouter()
 
@@ -98,6 +100,36 @@ async def steer(run_id: str, req: SteerRequest) -> dict:
     """Talk to a running agent mid-task — the message is injected into its live run so it
     can adjust course. Returns { delivered: bool, reason? }."""
     return supervisor.steer(run_id, req.text)
+
+
+@router.post("/api/runs/{run_id}/stop")
+async def stop(run_id: str) -> dict:
+    """Kill a running agent. Returns { stopped: bool, reason? }."""
+    return await supervisor.stop(run_id)
+
+
+@router.post("/api/runs/{run_id}/restart")
+async def restart(run_id: str) -> dict:
+    """Relaunch an agent with the same task/workdir as a fresh run. Returns { run_id } or error."""
+    run = supervisor.restart(run_id)
+    if not run:
+        return {"error": "can't restart this run"}
+    return {"run_id": run.run_id}
+
+
+@router.get("/api/runs/{run_id}/diff")
+async def run_diff(run_id: str) -> dict:
+    """What the agent changed in its working directory (git diff of the run's workdir)."""
+    run = supervisor.get(run_id)
+    if not run:
+        return {"is_git": False, "error": "no such run", "files": [], "diff": ""}
+    return await workspace_diff(run.workdir or settings.sandbox_dir)
+
+
+@router.get("/api/repos")
+async def repos() -> list[dict]:
+    """The user's real git repos (quick-launch targets for a coding agent)."""
+    return list_repos()
 
 
 @router.get("/api/runs")
