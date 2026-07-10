@@ -212,6 +212,11 @@ The Fleet is the "manage my Claude Code agents" surface. Beyond launch + watch +
   a fresh run (returns the new `run_id`). Not for arena/mission (not started via the generic path).
 - **Review the diff** — `GET /api/runs/{id}/diff` → `runtime/workspace.py::workspace_diff(cwd)`:
   git status + tracked diff + inlined untracked/new files, all size-capped. This is the DIFF tab.
+- **Accept the work** — `POST /api/runs/{id}/commit {message?}` → `workspace_commit()` = `git add -A`
+  + commit in the workdir (repo's own git identity; guards not-a-repo / nothing-to-commit, surfaces
+  git's error). The DIFF tab's commit bar (message input + COMMIT); the short hash shows in the
+  header and the diff refreshes clean. **Commit-only** — it never discards or pushes. (A guarded
+  discard-from-UI is a possible follow-up.)
 - **Launch on a real repo** — `GET /api/repos` → `list_repos("~/dev")` (dirs with a `.git`), shown
   as quick-pick chips in the Fleet launcher (workdir still defaults to the sandbox).
 - **Per-agent usage** — `Run.cost_usd`/`Run.tokens` accumulate via an `on_usage` callback the
