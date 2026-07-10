@@ -126,6 +126,23 @@ export async function getRunDiff(runId: string): Promise<RunDiff> {
   return r.json();
 }
 
+// Accept an agent's work — commit everything in its workdir. Returns the new commit's short hash.
+export interface CommitResult {
+  committed: boolean;
+  hash?: string;
+  message?: string;
+  total_commits?: string;
+  error?: string;
+}
+export async function commitRun(runId: string, message?: string): Promise<CommitResult> {
+  const r = await fetch(`${API}/api/runs/${runId}/commit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: message ?? null }),
+  });
+  return r.json();
+}
+
 // The user's real git repos — quick-launch targets for a coding agent.
 export interface Repo {
   name: string;

@@ -20,7 +20,7 @@ from app.config import settings
 from app.runtime.bus import subscribe, subscribe_all
 from app.runtime.events import EventType
 from app.runtime.supervisor import supervisor
-from app.runtime.workspace import list_repos, workspace_diff
+from app.runtime.workspace import list_repos, workspace_commit, workspace_diff
 
 router = APIRouter()
 
@@ -124,6 +124,19 @@ async def run_diff(run_id: str) -> dict:
     if not run:
         return {"is_git": False, "error": "no such run", "files": [], "diff": ""}
     return await workspace_diff(run.workdir or settings.sandbox_dir)
+
+
+class CommitRequest(BaseModel):
+    message: str | None = None  # commit message; a default is used if blank
+
+
+@router.post("/api/runs/{run_id}/commit")
+async def run_commit(run_id: str, req: CommitRequest) -> dict:
+    """Accept the agent's work — commit everything in its workdir. { committed, hash?, error? }."""
+    run = supervisor.get(run_id)
+    if not run:
+        return {"committed": False, "error": "no such run"}
+    return await workspace_commit(run.workdir or settings.sandbox_dir, req.message)
 
 
 @router.get("/api/repos")

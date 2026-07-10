@@ -24,6 +24,17 @@ async def _git(cwd: str, *args: str) -> tuple[int, str]:
     return proc.returncode or 0, out.decode(errors="replace")
 
 
+async def _git_io(cwd: str, *args: str) -> tuple[int, str, str]:
+    """Like _git but also returns stderr — for commands whose failure reason we surface."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", cwd, *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate()
+    return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+
+
 async def workspace_diff(cwd: str) -> dict:
     """What changed in `cwd`: the file list (git status) + a combined diff of tracked edits,
     with new (untracked) files inlined as addition blocks so files the agent *created* show up
@@ -67,6 +78,35 @@ async def workspace_diff(cwd: str) -> dict:
     if truncated:
         diff = diff[:_DIFF_CAP] + "\n… (diff truncated)"
     return {"dir": cwd, "is_git": True, "files": files, "diff": diff, "truncated": truncated}
+
+
+async def workspace_commit(cwd: str, message: str | None) -> dict:
+    """Accept an agent's work: `git add -A` + commit everything in `cwd`. This is the
+    'approve' end of review — it snapshots what the agent did (it never discards or pushes).
+    Uses the repo's own git identity; surfaces git's error if the commit can't be made."""
+    cwd = os.path.abspath(os.path.expanduser(cwd))
+    if not os.path.isdir(cwd):
+        return {"committed": False, "error": "directory does not exist"}
+    rc, _ = await _git(cwd, "rev-parse", "--is-inside-work-tree")
+    if rc != 0:
+        return {"committed": False, "error": "not a git repo — nothing to commit"}
+
+    _, status = await _git(cwd, "status", "--porcelain")
+    if not status.strip():
+        return {"committed": False, "error": "nothing to commit — no changes"}
+
+    rc, _, err = await _git_io(cwd, "add", "-A")
+    if rc != 0:
+        return {"committed": False, "error": (err or "git add failed").strip()[:300]}
+
+    msg = (message or "").strip() or "Agent changes (via Ada)"
+    rc, out, err = await _git_io(cwd, "commit", "-m", msg)
+    if rc != 0:
+        return {"committed": False, "error": (err or out or "git commit failed").strip()[:300]}
+
+    _, head, _ = await _git_io(cwd, "rev-parse", "--short", "HEAD")
+    _, count = await _git(cwd, "rev-list", "--count", "HEAD")
+    return {"committed": True, "hash": head.strip(), "message": msg, "total_commits": count.strip()}
 
 
 def list_repos(root: str = "~/dev") -> list[dict]:

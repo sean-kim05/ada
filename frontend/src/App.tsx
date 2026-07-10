@@ -5,6 +5,7 @@ import {
   stopRun,
   restartRun,
   getRunDiff,
+  commitRun,
   listRepos,
   spawnAgent,
   listAgents,
@@ -1588,6 +1589,9 @@ function TerminalPanel({ run }: { run: FleetRun }) {
 function DiffPanel({ runId, status, tools }: { runId: string; status: RunStatus; tools: number }) {
   const [diff, setDiff] = useState<RunDiff | null>(null);
   const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [committing, setCommitting] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const load = async () => {
     setLoading(true);
     try {
@@ -1599,11 +1603,31 @@ function DiffPanel({ runId, status, tools }: { runId: string; status: RunStatus;
     }
   };
   useEffect(() => {
+    setNote(null);
     load();
     // refetch when the run advances (new tool call) or ends
   }, [runId, status, tools]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const files = diff?.files ?? [];
+  const canCommit = !!diff?.is_git && files.length > 0;
+  const doCommit = async () => {
+    if (committing) return;
+    setCommitting(true);
+    setNote(null);
+    try {
+      const r = await commitRun(runId, msg.trim() || undefined);
+      if (r.committed) {
+        setNote(`✓ committed ${r.hash}`);
+        setMsg("");
+        await load(); // diff now clean — the work is captured
+      } else {
+        setNote(`✕ ${r.error ?? "commit failed"}`);
+      }
+    } finally {
+      setCommitting(false);
+    }
+  };
+
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 14px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
@@ -1615,6 +1639,7 @@ function DiffPanel({ runId, status, tools }: { runId: string; status: RunStatus;
           </span>
         ))}
         {files.length > 8 && <span style={mono(10, "var(--text-faint)")}>+{files.length - 8} more</span>}
+        {note && <span style={mono(9.5, note.startsWith("✓") ? "var(--accent)" : "var(--red)", ".04em")}>{note}</span>}
         <button
           className="btn-ghost"
           onClick={load}
@@ -1623,7 +1648,7 @@ function DiffPanel({ runId, status, tools }: { runId: string; status: RunStatus;
           {loading ? "…" : "↻ REFRESH"}
         </button>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", background: "#050506", borderRadius: "0 0 13px 13px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", background: "#050506", borderRadius: canCommit ? 0 : "0 0 13px 13px" }}>
         {!diff && <div style={mono(11.5, "var(--text-faint)")}>loading diff…</div>}
         {diff && !diff.is_git && <div style={mono(11.5, "var(--text-faint)")}>{diff.error ?? "not a git repo — nothing to diff"}</div>}
         {diff && diff.is_git && files.length === 0 && (
@@ -1637,6 +1662,27 @@ function DiffPanel({ runId, status, tools }: { runId: string; status: RunStatus;
           ))}
         {diff?.truncated && <div style={{ ...mono(10.5, "var(--text-faint)"), marginTop: 8 }}>… diff truncated</div>}
       </div>
+      {canCommit && (
+        <div style={{ flex: "none", borderTop: "1px solid var(--line)", background: "rgba(255,255,255,.015)", padding: "9px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            className="bare"
+            value={msg}
+            onChange={(e) => setMsg(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doCommit()}
+            placeholder='commit message… (default: "Agent changes (via Ada)")'
+            style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 8, padding: "7px 11px", color: "var(--text)", fontFamily: "var(--mono)", fontSize: 11.5 }}
+          />
+          <button
+            className="btn-accent"
+            onClick={doCommit}
+            disabled={committing}
+            title="git add -A + commit the agent's changes in its workdir"
+            style={{ ...mono(10, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 8, padding: "7px 13px", cursor: committing ? "default" : "pointer", flex: "none", opacity: committing ? 0.6 : 1 }}
+          >
+            {committing ? "…" : "✓ COMMIT"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
