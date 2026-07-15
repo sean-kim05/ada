@@ -11,3 +11,15 @@ httpx>=0.27
 rich>=13.9
 python-dotenv>=1.0
 websockets>=13.1
+
+# Live web search for the researcher agent (keyless DuckDuckGo).
+ddgs>=9.14
+
+# Long-term memory / RAG — in-process embeddings (no API key). Pulls onnxruntime.
+fastembed>=0.8
+
+# Secretary: Google Calendar / Gmail. google-auth-oauthlib is used by
+# authorize_google.py to mint token.json from the one-time consent flow.
+google-api-python-client>=2.198
+google-auth>=2.55
+google-auth-oauthlib>=1.4

@@ -17,3 +17,9 @@ frontend/dist/
 
 # claude_code agent workspace
 sandbox/
+
+# ada launcher logs
+.ada-logs/
+
+# TS incremental build cache
+*.tsbuildinfo

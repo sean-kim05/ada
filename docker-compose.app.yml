@@ -1,0 +1,46 @@
+# Ada — app tier (backend + frontend), layered on top of docker-compose.yml's
+# stateful services. Build & run everything with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --build
+#
+# The base file (docker-compose.yml) still runs standalone for host dev, where
+# you keep the backend + Vite on the host so Forge (the `claude` CLI) and the
+# Ollama GPU router work. This overlay is the fully-containerized core.
+services:
+  backend:
+    build: ./backend
+    container_name: ada-backend
+    # ANTHROPIC_API_KEY and other secrets come from backend/.env (gitignored).
+    env_file:
+      - ./backend/.env
+    # Point the app at the compose service names; override .env's localhost URLs.
+    # OLLAMA lives on the host (GPU) — reach it via host.docker.internal.
+    environment:
+      POSTGRES_DSN: postgresql://ada:ada_dev@postgres:5432/ada
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    ports:
+      - "8000:8000"   # published so the browser (ada.ts → 127.0.0.1:8000) reaches it
+    volumes:
+      # Calendar/Gmail OAuth tokens, read-only. Comment out if not set up yet.
+      - ./backend/.google:/app/.google:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux: resolve the host for Ollama
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: ada-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

@@ -1,0 +1,9 @@
+# Never bake secrets or local venv into the image.
+.venv/
+.env
+.google/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.Zone.Identifier

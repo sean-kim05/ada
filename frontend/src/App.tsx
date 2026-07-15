@@ -263,11 +263,6 @@ const ACCENTS: { key: string; rgb: string }[] = [
 
 /* ── side-panel scaffolding — HOURS drives the Calendar day grid ── */
 const HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
-const REMINDERS = [
-  { text: "Call the dentist", when: "2:00 PM", active: true },
-  { text: "Renew ada.computer domain", when: "TMRW" },
-  { text: "Sarah's birthday", when: "FRI" },
-];
 const GREETING: ChatMsg = {
   role: "ada",
   text:
@@ -615,7 +610,7 @@ export default function App() {
                 addTask(v).then(refreshTasks).catch(refreshTasks);
               }}
             />
-            <RemindersPanel />
+            <RemindersPanel tasks={tasks} />
           </div>
         </section>
         </>
@@ -912,19 +907,48 @@ function TodoPanel({
   );
 }
 
-function RemindersPanel() {
+// Turn a task's due-date string into a short "when" label + whether it's due now.
+// Parses real dates (ISO etc.); falls back to showing the raw string for freeform dues.
+function reminderInfo(due: string): { when: string; active: boolean; sort: number } {
+  const d = new Date(due);
+  if (isNaN(d.getTime())) return { when: due.slice(0, 12).toUpperCase(), active: false, sort: Number.MAX_SAFE_INTEGER };
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const dd = new Date(d); dd.setHours(0, 0, 0, 0);
+  const days = Math.round((dd.getTime() - today.getTime()) / 86400000);
+  let when: string;
+  if (days < 0) when = "OVERDUE";
+  else if (days === 0) when = "TODAY";
+  else if (days === 1) when = "TMRW";
+  else if (days < 7) when = d.toLocaleDateString([], { weekday: "short" }).toUpperCase();
+  else when = d.toLocaleDateString([], { month: "short", day: "numeric" }).toUpperCase();
+  return { when, active: days <= 0, sort: d.getTime() };
+}
+
+// Real reminders — the soonest not-done tasks that carry a due date (from Postgres,
+// same store as the To-do panel and Ada's task tools). No demo data.
+function RemindersPanel({ tasks }: { tasks: Task[] }) {
+  const items = tasks
+    .filter((t) => !t.done && t.due)
+    .map((t) => ({ t, ...reminderInfo(t.due as string) }))
+    .sort((a, b) => a.sort - b.sort)
+    .slice(0, 5);
   return (
     <div style={panel}>
       <div style={phead}>
         <span style={mono(11, "var(--text-dim)", ".16em")}>REMINDERS</span>
-        <span style={mono(10, "var(--text-faint)")}>{REMINDERS.length}</span>
+        <span style={mono(10, "var(--text-faint)")}>{items.length}</span>
       </div>
       <div>
-        {REMINDERS.map((r, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 16px", borderBottom: i < REMINDERS.length - 1 ? "1px solid var(--line)" : undefined }}>
-            <span style={{ width: 7, height: 7, flex: "none", borderRadius: "50%", background: r.active ? "var(--accent)" : "var(--line-2)", boxShadow: r.active ? "0 0 8px rgba(var(--accent-rgb),.7)" : undefined }} />
-            <span style={{ fontSize: 13, flex: 1 }}>{r.text}</span>
-            <span style={mono(10.5, r.active ? "var(--accent)" : "var(--text-faint)")}>{r.when}</span>
+        {items.length === 0 && (
+          <div style={{ padding: "16px", fontSize: 12.5, color: "var(--text-faint)" }}>
+            Nothing due. Add a task with a due date, or ask Ada to remind you about something.
+          </div>
+        )}
+        {items.map(({ t, when, active }, i) => (
+          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 16px", borderBottom: i < items.length - 1 ? "1px solid var(--line)" : undefined }}>
+            <span style={{ width: 7, height: 7, flex: "none", borderRadius: "50%", background: active ? "var(--accent)" : "var(--line-2)", boxShadow: active ? "0 0 8px rgba(var(--accent-rgb),.7)" : undefined }} />
+            <span style={{ fontSize: 13, flex: 1 }}>{t.title}</span>
+            <span style={mono(10.5, active ? "var(--accent)" : "var(--text-faint)")}>{when}</span>
           </div>
         ))}
       </div>

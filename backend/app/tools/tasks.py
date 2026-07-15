@@ -23,8 +23,10 @@ def _row(r) -> dict:
 
 
 async def add_task(title: str, due: str | None = None) -> dict:
-    """Add a to-do. `due` is an optional free-text or ISO date string (e.g. "Today",
-    "2 PM", "2026-07-08"). Returns the created task."""
+    """Add a to-do. `due` is optional; when the user gives a deadline, prefer an ISO
+    date `YYYY-MM-DD` (or `YYYY-MM-DDTHH:MM`) so the deck's Reminders panel can sort
+    and highlight it — call current_time first to resolve relative dates like
+    "tomorrow" or "Friday". Free text is still accepted. Returns the created task."""
     task_id = uuid.uuid4().hex[:8]
     async with get_pool().acquire() as conn:
         r = await conn.fetchrow(

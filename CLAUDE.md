@@ -76,7 +76,10 @@ M1/M2 brains run on Haiku; M3 runs the `claude` CLI's default model (Opus).
   steerable agents; TraceRow renders steer messages distinctly. Verified end-to-end: injected
   "stop, say STEERED_STOP" mid-research → agent dropped its plan and obeyed. NOT steerable:
   claude_code/Forge (subprocess) and finished runs — the endpoint refuses gracefully.
-- Still demo: **Reminders** panel. Not built yet: **Gmail** (needs the Google OAuth).
+- **Reminders** panel is real: it derives from the Postgres tasks that carry a due date
+  (soonest first, "TODAY"/"TMRW"/weekday, glows when due/overdue) — no demo data.
+  `RemindersPanel({tasks})` + `reminderInfo()` in App.tsx; `add_task`'s `due` prefers ISO so it
+  sorts. Not built yet: **Gmail** (needs the Google OAuth).
 
 ## Run it
 
@@ -98,6 +101,38 @@ ollama serve &                     # → :11434;  first time: ollama pull qwen2.
 
 Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-haiku-4-5"}`.
 
+### Docker — fully-containerized build (the reproducible core)
+
+`backend/Dockerfile` + `frontend/Dockerfile` (multi-stage → nginx) + `docker-compose.app.yml`
+layer the app tier onto the stateful services. Build & run the whole thing:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --build
+# backend :8000, frontend (nginx) :5173, plus Postgres/Redis/Qdrant
+```
+
+Images: `ada-backend` (~1GB, incl. fastembed/onnxruntime + Google libs) and `ada-frontend` (~74MB).
+`requirements.txt` now pins the deps that used to be installed out-of-band (`fastembed`,
+`google-api-python-client`, `google-auth`, `google-auth-oauthlib`) so the image is reproducible.
+`restart: unless-stopped` on both, so with Docker Desktop set to start on login the stack
+auto-boots. **This is the deploy foundation — verified E2E** (all 5 containers healthy, backend
+`/health` ok, tasks/memory/RAG connected via service names).
+
+⚠️ **Two host-only features do NOT work from the containerized backend** (this is the
+container↔host boundary, not a bug):
+- **Forge** — the container has no `claude` CLI, no Max-plan auth, no `~/dev`. Coding agents
+  need the **host** backend.
+- **Local model router** — host Ollama binds `127.0.0.1`; on Docker Desktop/WSL2 the container's
+  `host.docker.internal` → `192.168.65.254` doesn't route back to it (router shows OLLAMA OFFLINE,
+  tools degrade gracefully). Binding Ollama to `0.0.0.0` still doesn't route on this WSL2/NAT setup.
+
+So: **for daily full-feature use run the backend + Vite on the host** (services in Docker); the
+containerized stack is the reproducible core / the base for a future user-facing deploy. Secrets
+(`backend/.env`, `backend/.google/`) are gitignored and `.dockerignore`d — never baked into an image;
+they're provided at runtime via `env_file` + a read-only bind mount.
+- Note: the loose `pydantic-ai>=0.0.14` pin resolves to the newest (2.9.x) in a clean image vs the
+  host venv's older build — pin it if container/host parity matters.
+
 ## Backend layout (`backend/app/`)
 
 - `agents/loop.py` — generic `drive(agent, prompt, emitter)` loop used by every **LLM** agent.
@@ -116,7 +151,7 @@ Health check: `curl 127.0.0.1:8000/health` → `{"status":"ok","model":"claude-h
   `claude_code`/Forge (`driver="claude_code"` → subprocess, not the LLM loop). `AgentSpec.driver`
   picks the path; `build(type)` makes a fresh Pydantic-AI agent for `driver="llm"` only.
 - `tools/` — `spawn.py` (`spawn_agent`, late-imports supervisor to dodge a cycle),
-  `research.py` (`web_search` **STUB** + `save_note`), `tasks.py`.
+  `research.py` (`web_search` = **live DuckDuckGo** via `ddgs`, run off-thread + `save_note`), `tasks.py`.
 - `runtime/supervisor.py` — `Supervisor.start(type, prompt)` launches concurrent runs;
   `Run.snapshot()`; `start_ada()` = the chat entrypoint. `_drive` branches on `spec.driver`
   (LLM loop vs `drive_claude_code`).
