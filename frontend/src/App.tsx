@@ -287,16 +287,6 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-/* ── accent themes (swaps --accent-rgb at the root) ── */
-const ACCENTS: { key: string; rgb: string }[] = [
-  { key: "mono", rgb: "250,250,250" },
-  { key: "amber", rgb: "234,158,70" },
-  { key: "gold", rgb: "216,180,96" },
-  { key: "coral", rgb: "233,124,92" },
-  { key: "cyan", rgb: "61,214,230" },
-  { key: "violet", rgb: "150,134,240" },
-  { key: "emerald", rgb: "74,198,150" },
-];
 
 /* ── side-panel scaffolding — HOURS drives the Calendar day grid ── */
 const HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
@@ -329,6 +319,7 @@ export default function App() {
   const refreshTasks = () => listTasks().then(setTasks).catch(() => {});
   const refreshCal = () => getCalendar().then(setCal).catch(() => {});
   const [view, setView] = useState<"deck" | "fleet" | "arena" | "mission" | "docs" | "router">("deck");
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [fleet, setFleet] = useState<Record<string, FleetRun>>({});
   const [agentTypes, setAgentTypes] = useState<AgentType[]>([]);
   const [focused, setFocused] = useState<string | null>(null);
@@ -336,8 +327,6 @@ export default function App() {
   const [launchPrompt, setLaunchPrompt] = useState("");
   const [launchDir, setLaunchDir] = useState("");
   const [clock, setClock] = useState(() => Date.now() / 1000);
-  const [accent, setAccent] = useState<string>(() => localStorage.getItem("ada.accent.v2") || "amber");
-  const [grid, setGrid] = useState<boolean>(() => localStorage.getItem("ada.grid") !== "0");
   const chatScroll = useRef<HTMLDivElement>(null);
   const traceScroll = useRef<HTMLDivElement>(null);
 
@@ -346,6 +335,20 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.setProperty("--accent-rgb", "237,237,237");
     document.documentElement.style.setProperty("--tex-op", "0");
+  }, []);
+
+  // ⌘K / Ctrl-K opens the command palette; Esc closes it.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      } else if (e.key === "Escape") {
+        setPaletteOpen(false);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
   }, []);
 
   // Autoscroll by pinning scrollTop to the bottom — never scrollIntoView (it breaks the app).
@@ -521,7 +524,7 @@ export default function App() {
             Haiku · Auto routing · {events.length ? Math.min(99, events.length * 3) : 0}% context
           </span>
           <span style={{ width: 1, height: 16, background: "var(--border)", flex: "none" }} />
-          <span style={{ ...mono(11, "var(--text-lo)"), border: "1px solid var(--border)", borderRadius: "var(--r-tag)", padding: "2px 6px", flex: "none" }}>⌘K</span>
+          <span onClick={() => setPaletteOpen(true)} style={{ ...mono(11, "var(--text-lo)"), border: "1px solid var(--border)", borderRadius: "var(--r-tag)", padding: "2px 6px", flex: "none", cursor: "pointer" }}>⌘K</span>
         </header>
 
         {/* home: conversation | rule | trace — no panels, no nested boxes */}
@@ -663,6 +666,43 @@ export default function App() {
           <MissionView agentTypes={agentTypes} />
         )}
       </main>
+      {paletteOpen && (
+        <CommandPalette
+          items={NAV_GROUPS.flatMap((g) => g.items.map((it) => ({ label: it.name, hint: g.label, run: () => setView(it.view) })))}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// The one place a real shadow is allowed. ⌘K to open, Esc / click-away to close.
+function CommandPalette({ items, onClose }: { items: { label: string; hint: string; run: () => void }[]; onClose: () => void }) {
+  const [q, setQ] = useState("");
+  const filtered = items.filter((i) => i.label.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "12vh" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...overlay, width: 520, maxWidth: "92vw", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search views…"
+          className="bare"
+          style={{ ...text("body", "var(--text-hi)"), background: "transparent", padding: "14px 16px", borderBottom: "1px solid var(--border)" }}
+        />
+        <div style={{ maxHeight: 320, overflowY: "auto", overflowX: "hidden", padding: 6 }}>
+          <div style={{ ...text("caption", "var(--text-lo)"), padding: "6px 10px" }}>Go to</div>
+          {filtered.map((i) => (
+            <div key={i.label} className="row-hover" onClick={() => { i.run(); onClose(); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: "var(--r-control)", cursor: "pointer" }}>
+              <span style={text("ui")}>{i.label}</span>
+              <span style={{ flex: 1 }} />
+              <span style={mono(11, "var(--text-lo)")}>{i.hint}</span>
+            </div>
+          ))}
+          {filtered.length === 0 && <div style={{ ...text("caption", "var(--text-lo)"), padding: "12px 10px" }}>No matches.</div>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1213,62 +1253,6 @@ function RailStat({ label, value, accent }: { label: string; value: string; acce
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
       <span style={mono(9.5, "var(--text-faint)", ".13em")}>{label}</span>
       <span style={mono(13, accent ? "var(--accent)" : "var(--text)")}>{value}</span>
-    </div>
-  );
-}
-function ThemeBar({
-  accent,
-  setAccent,
-  grid,
-  setGrid,
-}: {
-  accent: string;
-  setAccent: (v: string) => void;
-  grid: boolean;
-  setGrid: (v: boolean) => void;
-}) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 9, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={mono(9, "var(--text-faint)", ".13em")}>ACCENT</span>
-        <span
-          onClick={() => setGrid(!grid)}
-          title="Toggle dot grid"
-          className="btn-ghost"
-          style={{
-            ...mono(8.5, grid ? "var(--accent)" : "var(--text-faint)", ".1em"),
-            border: `1px solid ${grid ? "rgba(var(--accent-rgb),.4)" : "var(--line)"}`,
-            borderRadius: 4,
-            padding: "1px 5px",
-            cursor: "pointer",
-          }}
-        >
-          GRID
-        </span>
-      </div>
-      <div style={{ display: "flex", gap: 7 }}>
-        {ACCENTS.map((a) => (
-          <span
-            key={a.key}
-            onClick={() => setAccent(a.key)}
-            title={a.key}
-            className="swatch"
-            style={{
-              width: 15,
-              height: 15,
-              flex: "none",
-              borderRadius: "50%",
-              cursor: "pointer",
-              background: `rgb(${a.rgb})`,
-              opacity: accent === a.key ? 1 : 0.72,
-              boxShadow:
-                accent === a.key
-                  ? `0 0 0 2px var(--bg), 0 0 0 3.5px rgb(${a.rgb}), 0 0 10px -1px rgb(${a.rgb})`
-                  : "inset 0 0 0 1px rgba(0,0,0,.35)",
-            }}
-          />
-        ))}
-      </div>
     </div>
   );
 }
