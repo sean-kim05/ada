@@ -1406,7 +1406,7 @@ function FleetView(p: FleetProps) {
                   style={{ ...chip, ...(on ? { color: "var(--text)", borderColor: "rgba(var(--accent-rgb),.4)", background: "rgba(var(--accent-rgb),.06)" } : {}) }}
                 >
                   <span style={{ color: typeColor(a.type), display: "inline-flex" }}>
-                    <AgentGlyph type={a.type} size={14} />
+                    <PixelAgent name={spriteFor(a.type)} size={16} />
                   </span>
                   {a.name}
                 </button>
@@ -1416,7 +1416,7 @@ function FleetView(p: FleetProps) {
           {launchBlurb && (
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
               <span style={{ color: typeColor(p.launchType), display: "inline-flex" }}>
-                <AgentGlyph type={p.launchType} size={13} />
+                <PixelAgent name={spriteFor(p.launchType)} size={16} />
               </span>
               <span style={{ ...mono(10.5, "var(--text-faint)", ".01em"), lineHeight: 1.4 }}>
                 {launchName} · {launchBlurb}
@@ -1968,7 +1968,7 @@ function ArenaPicker({ agentTypes, value, onPick, disabled }: { agentTypes: Agen
             }}
           >
             <span style={{ color: c, display: "inline-flex" }}>
-              <AgentGlyph type={a.type} size={13} />
+              <PixelAgent name={spriteFor(a.type)} size={16} />
             </span>
             {a.name}
           </button>
@@ -1983,7 +1983,7 @@ function ArenaCombatant({ type, name, side, active }: { type: string; name: stri
   return (
     <div style={{ display: "flex", flexDirection: side === "left" ? "row" : "row-reverse", alignItems: "center", gap: 11 }}>
       <div style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", color: c, background: "rgba(255,255,255,.03)", border: `1px solid ${c}`, boxShadow: active ? `0 0 22px -6px ${c}` : undefined }}>
-        <AgentGlyph type={type} size={20} />
+        <PixelAgent name={spriteFor(type)} size={16} />
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: side === "left" ? "flex-start" : "flex-end" }}>
         <span style={{ fontSize: 14.5, fontWeight: 600 }}>{name}</span>
@@ -2013,7 +2013,7 @@ function ArenaMessage({ m, left }: { m: ArenaMsg; left: boolean }) {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexDirection: left ? "row" : "row-reverse" }}>
           <span style={{ color: c, display: "inline-flex" }}>
-            <AgentGlyph type={m.from_type} size={12} />
+            <PixelAgent name={spriteFor(m.from_type)} size={16} />
           </span>
           <span style={{ ...mono(10.5, c, ".04em"), fontWeight: 600 }}>{m.from}</span>
           <span style={mono(9.5, "var(--text-faint)")}>→ {m.to}</span>
@@ -2123,7 +2123,7 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
             <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 11, padding: "13px 15px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 11 }}>
                 <span style={{ color: typeColor("planner"), display: "inline-flex" }}>
-                  <AgentGlyph type="planner" size={15} />
+                  <PixelAgent name={spriteFor("planner")} size={16} />
                 </span>
                 <span style={mono(10.5, "var(--text-dim)", ".1em")}>ATLAS · PLAN</span>
               </div>
