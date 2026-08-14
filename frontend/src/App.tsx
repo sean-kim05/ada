@@ -36,6 +36,26 @@ import {
   type FleetMsg,
   type ArenaMsg,
 } from "./lib/ada";
+import {
+  panel as panelBase,
+  phead as pheadBase,
+  mono,
+  text,
+  btn,
+  input as inputStyle,
+  tag,
+  dot,
+  surface2,
+  well,
+  overlay,
+  scroller,
+  shrinkable,
+  laneHue,
+  type AgentState,
+} from "./styleHelpers";
+import { PixelAgent, AgentBadge } from "./PixelAgent";
+import { CREW, BENCH } from "./sprites";
+import { buildTimeline } from "./traceSpans";
 
 interface ChatMsg {
   role: "user" | "ada";
@@ -53,30 +73,11 @@ interface FleetRun {
 }
 
 /* ── style helpers ─────────────────────────── */
-const panel: CSSProperties = {
-  background: "var(--panel)",
-  border: "1px solid var(--line)",
-  borderRadius: "var(--r3)",
-  boxShadow: "var(--hair-top), var(--sh-2)",
-  display: "flex",
-  flexDirection: "column",
-  overflow: "hidden",
-  minWidth: 0,
-};
-const phead: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  padding: "var(--s3) var(--s4)",
-  borderBottom: "1px solid var(--line)",
-  flex: "none",
-};
-const mono = (size: number, color = "var(--text)", ls = "0"): CSSProperties => ({
-  fontFamily: "var(--mono)",
-  fontSize: size,
-  color,
-  letterSpacing: ls,
-});
+// Token-based panel/phead (from styleHelpers) composed with the structural props
+// existing call sites rely on — flex column for panels, spread header for pheads.
+// Individual headers migrate to the new title→pill→gap→meta order in later phases.
+const panel: CSSProperties = { ...panelBase, display: "flex", flexDirection: "column", minWidth: 0 };
+const phead: CSSProperties = { ...pheadBase, justifyContent: "space-between" };
 const modelBadge: CSSProperties = {
   ...mono(9.5, "var(--text-dim)", ".06em"),
   border: "1px solid var(--line-2)",
