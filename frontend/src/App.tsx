@@ -55,7 +55,7 @@ import {
 } from "./styleHelpers";
 import { PixelAgent, AgentBadge } from "./PixelAgent";
 import { CREW, BENCH } from "./sprites";
-import { buildTimeline } from "./traceSpans";
+import { buildTimeline, type RawEvent } from "./traceSpans";
 
 interface ChatMsg {
   role: "user" | "ada";
@@ -1327,8 +1327,131 @@ interface FleetProps {
   setLaunchDir: (v: string) => void;
   clock: number;
 }
+const fmtSec = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${s.toFixed(s < 10 ? 1 : 0)}s`);
+const code3 = (name?: string) => (name ?? "AGT").replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() || "AGT";
+const laneMix = (id: string, a: number) => `color-mix(in oklch, ${laneHue(id)} ${Math.round(a * 100)}%, transparent)`;
+
+// The time-axis Fleet — the view a card grid can't give you: who ran when, and in parallel.
+// Fed entirely by buildTimeline() so it draws whatever the event stream provides.
+function FleetGantt({ fleet, clock, focusId, setFocused }: { fleet: Record<string, FleetRun>; clock: number; focusId: string | null; setFocused: (id: string) => void }) {
+  const raw: RawEvent[] = [];
+  for (const [id, run] of Object.entries(fleet)) {
+    // Keep the timeline about the current working set — drop long-finished runs that would
+    // otherwise stretch the wall clock (a stale chat run from an hour ago, say).
+    const startedAt = run.meta?.started_at ?? clock;
+    if (run.status !== "running" && clock - startedAt > 1800) continue;
+    const evs = run.events.filter((e) => e.type !== "log");
+    if (evs.length === 0) {
+      // No streamed steps (e.g. the browser connected after the run finished): draw one
+      // measured span for the run's own window so the lane, bar and figures still mean something.
+      const start = Math.round(startedAt * 1000);
+      const end = Math.round((run.status === "running" ? clock : startedAt + 2) * 1000);
+      raw.push({ id: `${id}-0`, agentId: id, startedAt: start, endedAt: end, status: run.status === "running" ? "running" : run.status === "error" ? "error" : "ok", title: run.lastStep || run.meta?.name });
+    } else {
+      evs.forEach((e, i) =>
+        raw.push({
+          id: `${id}-${e.seq ?? i}`,
+          agentId: id,
+          at: Math.round(e.ts * 1000),
+          tool: e.payload?.tool ? String(e.payload.tool) : undefined,
+          phase: e.type === "tool_call" ? "act" : e.type === "final" || e.type === "tool_result" ? "observe" : "act",
+          status: e.type === "error" ? "error" : run.status === "running" && i === evs.length - 1 ? "running" : "ok",
+          title: e.type === "tool_call" ? String(e.payload?.tool ?? "tool") : e.type,
+        }),
+      );
+    }
+  }
+  const tl = buildTimeline(raw, Math.round(clock * 1000));
+  if (tl.lanes.length === 0) {
+    return (
+      <div style={{ ...scroller, display: "grid", placeItems: "center", padding: 40 }}>
+        <div style={{ ...text("caption", "var(--text-lo)"), textAlign: "center", maxWidth: 260 }}>No agents yet. Launch one above and its timeline appears here.</div>
+      </div>
+    );
+  }
+  const figures = [
+    { label: "Wall clock", val: fmtSec(tl.wallSec), err: false },
+    { label: "Agent-seconds", val: fmtSec(tl.agentSec), err: false },
+    { label: "Parallelism", val: `${tl.parallelism.toFixed(1)}×`, err: false },
+    { label: "Wasted", val: fmtSec(tl.wastedSec), err: tl.wastedSec > 0 },
+  ];
+  return (
+    <div style={{ ...scroller, padding: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", gap: 32, padding: "14px 16px", borderBottom: "1px solid var(--border)", flex: "none" }}>
+        {figures.map((f) => (
+          <div key={f.label} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={text("caption", "var(--text-lo)")}>{f.label}</span>
+            <span style={{ ...mono(17, f.err ? "var(--state-error)" : "var(--text-hi)"), lineHeight: "22px" }}>{f.val}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ position: "relative", height: 24, borderBottom: "1px solid var(--border)", flex: "none" }}>
+        {tl.ticks.map((tk, i) => (
+          <span key={i} style={{ position: "absolute", top: 5, left: `calc(var(--w-lane-gutter) + (100% - var(--w-lane-gutter) - var(--w-lane-cost)) * ${tk.pct / 100})`, ...mono(10, "var(--text-lo)"), transform: "translateX(-50%)" }}>{tk.label}</span>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+        {tl.lanes.map((lane) => {
+          const meta = fleet[lane.agentId]?.meta;
+          const focused = lane.agentId === focusId;
+          return (
+            <div key={lane.agentId} onClick={() => setFocused(lane.agentId)} className="row-hover" style={{ display: "flex", height: "var(--h-lane)", alignItems: "center", cursor: "pointer", background: focused ? "rgba(255,255,255,.03)" : undefined, borderBottom: "1px solid var(--border)" }}>
+              <div style={{ width: "var(--w-lane-gutter)", flex: "none", display: "flex", alignItems: "center", gap: 8, padding: "0 12px", minWidth: 0 }}>
+                <span style={{ width: 3, height: 24, borderRadius: 2, background: laneHue(lane.agentId), flex: "none" }} />
+                <span style={{ ...mono(11, laneHue(lane.agentId, true)), flex: "none" }}>{code3(meta?.name)}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ ...text("ui"), ...shrinkable }}>{meta?.name ?? lane.agentId}</div>
+                  <div style={{ ...text("caption", "var(--text-lo)"), ...shrinkable }}>{crewRole(meta?.agent_type)}</div>
+                </div>
+              </div>
+              <div style={{ flex: 1, position: "relative", height: "var(--h-lane)", borderLeft: "1px solid var(--border)", backgroundImage: "repeating-linear-gradient(90deg, transparent 0 calc(20% - 1px), var(--border) calc(20% - 1px) 20%)" }}>
+                {lane.gaps.map((g, i) => (
+                  <div key={`g${i}`} style={{ position: "absolute", top: "50%", left: `${g.leftPct}%`, width: `${g.widthPct}%`, borderTop: "1px dashed var(--text-disabled)", transform: "translateY(-50%)" }} />
+                ))}
+                {lane.spans.map((s) => (
+                  <div
+                    key={s.id}
+                    title={s.tool || s.title || s.phase}
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      left: `${s.leftPct}%`,
+                      width: `${s.widthPct}%`,
+                      height: 24,
+                      borderRadius: 3,
+                      overflow: "hidden",
+                      background: s.derived
+                        ? `repeating-linear-gradient(45deg, ${laneMix(lane.agentId, 0.7)} 0 3px, transparent 3px 6px)`
+                        : s.phase === "plan"
+                        ? laneMix(lane.agentId, 0.35)
+                        : laneMix(lane.agentId, 0.8),
+                      border: s.phase === "plan" ? `1px solid ${laneMix(lane.agentId, 0.55)}` : undefined,
+                      boxShadow: s.status === "running" ? "inset -2px 0 0 var(--text-hi)" : undefined,
+                      ...mono(9, "#000"),
+                      display: "flex",
+                      alignItems: "center",
+                      padding: "0 5px",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {s.tool || ""}
+                  </div>
+                ))}
+              </div>
+              <div style={{ width: "var(--w-lane-cost)", flex: "none", textAlign: "right", padding: "0 12px", ...mono(11, "var(--text-lo)") }}>{meta?.cost_usd ? `$${meta.cost_usd.toFixed(3)}` : "—"}</div>
+            </div>
+          );
+        })}
+      </div>
+      {tl.anyDerived && <div style={{ ...text("caption", "var(--text-lo)"), padding: "8px 16px", flex: "none" }}>Durations inferred from step arrival.</div>}
+    </div>
+  );
+}
+
 function FleetView(p: FleetProps) {
   const [tab, setTab] = useState<"trace" | "terminal" | "diff">("trace");
+  const [mode, setMode] = useState<"timeline" | "grid">("timeline");
   const [steerText, setSteerText] = useState("");
   const [repos, setRepos] = useState<Repo[]>([]);
   useEffect(() => {
@@ -1387,11 +1510,25 @@ function FleetView(p: FleetProps) {
     <section style={{ display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
       <div style={panel}>
         <div style={phead}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={mono(11, "var(--text)", ".16em")}>FLEET</span>
-            <span style={tagStyle(running ? "accent" : undefined)}>
-              {running} RUNNING · {runs.length} TOTAL
+          <span style={text("ui")}>Fleet</span>
+          {running > 0 && (
+            <span style={tag("running")}>
+              <span style={dot("running", 6)} />
+              {running} running
             </span>
+          )}
+          <span style={{ flex: 1 }} />
+          <span style={mono(11, "var(--text-lo)")}>{runs.length} total</span>
+          <div style={{ display: "flex", padding: 2, background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: "var(--r-control)", gap: 2, flex: "none" }}>
+            {(["timeline", "grid"] as const).map((m) => (
+              <span
+                key={m}
+                onClick={() => setMode(m)}
+                style={{ ...text("caption", mode === m ? "var(--text-hi)" : "var(--text-lo)"), cursor: "pointer", padding: "3px 10px", borderRadius: 4, background: mode === m ? "var(--surface-2)" : "transparent", textTransform: "capitalize" }}
+              >
+                {m}
+              </span>
+            ))}
           </div>
         </div>
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1479,16 +1616,20 @@ function FleetView(p: FleetProps) {
             </div>
           )}
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(228px,1fr))", gap: 12, alignContent: "start" }}>
-          {runs.length === 0 && (
-            <div style={{ ...mono(12, "var(--text-faint)"), gridColumn: "1/-1", padding: "8px 2px", lineHeight: 1.6 }}>
-              No agents running. Launch one above — or in Chat, ask Ada to “spawn a researcher on …” and it appears here.
-            </div>
-          )}
-          {runs.map((r) => (
-            <FleetCard key={r.id} id={r.id} run={r} focused={r.id === focusId} onClick={() => p.setFocused(r.id)} clock={p.clock} />
-          ))}
-        </div>
+        {mode === "timeline" ? (
+          <FleetGantt fleet={p.fleet} clock={p.clock} focusId={focusId} setFocused={p.setFocused} />
+        ) : (
+          <div style={{ ...scroller, padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(228px,1fr))", gap: 12, alignContent: "start" }}>
+            {runs.length === 0 && (
+              <div style={{ ...text("caption", "var(--text-lo)"), gridColumn: "1/-1", padding: "8px 2px", lineHeight: 1.6 }}>
+                No agents running. Launch one above — or in Chat, ask Ada to “spawn a researcher on …” and it appears here.
+              </div>
+            )}
+            {runs.map((r) => (
+              <FleetCard key={r.id} id={r.id} run={r} focused={r.id === focusId} onClick={() => p.setFocused(r.id)} clock={p.clock} />
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ ...panel, boxShadow: "inset 0 1px 0 rgba(255,255,255,.03), 0 1px 2px rgba(0,0,0,.45), 0 0 40px -20px rgba(var(--accent-rgb),.3)" }}>
@@ -2027,6 +2168,19 @@ function ArenaMessage({ m, left }: { m: ArenaMsg; left: boolean }) {
 }
 
 /* ── mission (M5) — planner decomposes → delegates → synthesizes ── */
+// A mission stage: a nowrap label followed by a 1px rule that fills the row.
+function Stage({ label, children }: { label: string; children: JSX.Element }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ ...text("caption", "var(--text-lo)"), whiteSpace: "nowrap" }}>{label}</span>
+        <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+      </div>
+      {children}
+    </div>
+  );
+}
+
 function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
   const [goal, setGoal] = useState("");
   const [worker, setWorker] = useState("researcher");
@@ -2056,6 +2210,16 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
   ).length;
   const final = events.find((e) => e.type === "final");
   const workerName = agentTypes.find((a) => a.type === worker)?.name ?? worker;
+  const results = events.filter((e) => e.type === "message" && e.payload.from_type === worker && e.payload.to_type === "planner");
+  const objective = String(plan?.payload.goal ?? goal ?? "");
+  const elapsedSec = events.length > 1 ? Math.max(0, events[events.length - 1].ts - events[0].ts) : 0;
+  const spend = events.reduce((s, e) => s + (e.cost_usd ?? 0), 0);
+  const figures: [string, string][] = [
+    ["Agents", String(tasks.length)],
+    ["Steps", String(events.length)],
+    ["Elapsed", fmtSec(elapsedSec)],
+    ["Spend", `$${spend.toFixed(3)}`],
+  ];
   const SAMPLES = [
     "Plan a weekend launch of an AI note-taking app",
     "Research and outline a blog post on RAG",
@@ -2065,20 +2229,37 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
   return (
     <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
       <div style={{ ...panel, flex: 1 }}>
-        <div style={phead}>
+        {/* header — mission id, objective, four figures */}
+        <div style={{ ...phead, height: "auto", flexDirection: "column", alignItems: "stretch", gap: 8, padding: "14px 16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={mono(11, "var(--text)", ".16em")}>MISSION</span>
-            <span style={tagStyle(running ? "accent" : undefined)}>
-              {running ? "RUNNING" : final ? "DONE" : "M5 · PLANNER DELEGATES"}
-            </span>
+            <span style={text("ui")}>Mission</span>
+            {running ? (
+              <span style={tag("running")}><span style={dot("running", 6)} />running</span>
+            ) : final ? (
+              <span style={tag("ok")}>done</span>
+            ) : (
+              <span style={mono(11, "var(--text-lo)")}>Atlas delegates → workers → synthesis</span>
+            )}
+            <span style={{ flex: 1 }} />
+            <span style={mono(11, "var(--text-lo)")}>{tasks.length ? `${Math.min(done, tasks.length)}/${tasks.length} subtasks` : ""}</span>
           </div>
-          <span style={mono(10, "var(--text-faint)")}>{tasks.length ? `${Math.min(done, tasks.length)}/${tasks.length} subtasks` : ""}</span>
+          {objective && <div style={{ ...text("title"), ...shrinkable }}>{objective}</div>}
+          {events.length > 0 && (
+            <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
+              {figures.map(([l, v]) => (
+                <div key={l} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={text("caption", "var(--text-lo)")}>{l}</span>
+                  <span style={{ ...mono(15, "var(--text-hi)"), lineHeight: "20px" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* launcher */}
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <span style={mono(10.5, "var(--text-faint)", ".08em")}>ATLAS DELEGATES TO</span>
+            <span style={text("caption", "var(--text-lo)")}>Atlas delegates to</span>
             <ArenaPicker agentTypes={agentTypes.filter((a) => a.type !== "ada")} value={worker} onPick={setWorker} disabled={running} />
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -2088,21 +2269,16 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
               onChange={(e) => setGoal(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && start()}
               placeholder="A goal to accomplish…"
-              style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 9, padding: "10px 13px", color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13 }}
+              style={{ flex: 1, ...inputStyle(), height: "auto", padding: "10px 13px" }}
             />
-            <button
-              className="btn-accent"
-              onClick={start}
-              disabled={running}
-              style={{ ...mono(11, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 9, padding: "0 20px", cursor: running ? "default" : "pointer", opacity: running ? 0.5 : 1 }}
-            >
-              RUN
+            <button onClick={start} disabled={running} style={{ ...btn("primary"), height: "auto", padding: "0 20px", opacity: running ? 0.5 : 1 }}>
+              Run
             </button>
           </div>
           {events.length === 0 && !running && (
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
               {SAMPLES.map((s) => (
-                <button key={s} className="btn-ghost" onClick={() => setGoal(s)} style={{ ...mono(10.5, "var(--text-dim)"), background: "transparent", border: "1px solid var(--line)", borderRadius: 20, padding: "5px 12px", cursor: "pointer" }}>
+                <button key={s} onClick={() => setGoal(s)} style={{ ...btn("ghost"), height: "auto", padding: "6px 12px", borderRadius: "var(--rpill)", ...text("caption", "var(--text-mid)") }}>
                   {s}
                 </button>
               ))}
@@ -2110,67 +2286,84 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
           )}
         </div>
 
-        {/* body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "18px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {events.length === 0 && !running && (
-            <div style={{ ...mono(12, "var(--text-faint)"), textAlign: "center", marginTop: 34 }}>
-              Give Atlas a goal — it breaks it into subtasks, delegates each to a {workerName}, and synthesizes the result.
+        {/* body — three stages, auto-fit, stack below ~1000px */}
+        <div style={{ ...scroller, padding: 16 }}>
+          {events.length === 0 && !running ? (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, textAlign: "center", padding: "40px 24px" }}>
+              <div style={{ opacity: 0.4 }}><PixelAgent name="commander" size={32} /></div>
+              <div style={text("title")}>Give Atlas a goal</div>
+              <div style={{ ...text("caption", "var(--text-lo)"), maxWidth: 300 }}>It breaks the goal into subtasks, delegates each to a {workerName}, and synthesizes the result.</div>
             </div>
-          )}
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(300px,100%),1fr))", gap: 12, alignItems: "start" }}>
+              {/* 01 · Plan */}
+              <Stage label="01 · Plan">
+                <div style={{ ...surface2, padding: 14, display: "flex", flexDirection: "column", gap: 9 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                    <PixelAgent name={spriteFor("planner")} size={16} />
+                    <span style={text("ui")}>Commander · Atlas</span>
+                  </div>
+                  {tasks.map((t, i) => {
+                    const st = i < done ? "done" : i === done && running ? "running" : "pending";
+                    return (
+                      <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                        <span style={{ ...mono(12, st === "done" ? "var(--state-ok)" : st === "running" ? "var(--state-running)" : "var(--text-lo)"), flex: "none", width: 16 }}>{String(i + 1).padStart(2, "0")}</span>
+                        <span style={{ ...text("caption", st === "pending" ? "var(--text-lo)" : "var(--text-hi)"), lineHeight: 1.5 }}>{t}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Stage>
 
-          {/* plan */}
-          {tasks.length > 0 && (
-            <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 11, padding: "13px 15px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 11 }}>
-                <span style={{ color: typeColor("planner"), display: "inline-flex" }}>
-                  <PixelAgent name={spriteFor("planner")} size={16} />
-                </span>
-                <span style={mono(10.5, "var(--text-dim)", ".1em")}>ATLAS · PLAN</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                {tasks.map((t, i) => {
-                  const st = i < done ? "done" : i === done && running ? "running" : "pending";
-                  const c = st === "done" ? typeColor("planner") : st === "running" ? "var(--accent)" : "var(--text-faint)";
-                  return (
-                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                      <span style={{ marginTop: 1, width: 16, height: 16, flex: "none", borderRadius: "50%", border: `1px solid ${c}`, background: st === "done" ? c : "transparent", display: "grid", placeItems: "center" }}>
-                        {st === "done" && (
-                          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="#0c0e11" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M2.5 6.2 5 8.6 9.5 3.6" />
-                          </svg>
-                        )}
-                        {st === "running" && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: "adaBlink 1.1s infinite" }} />}
-                      </span>
-                      <span style={{ fontSize: 12.5, lineHeight: 1.45, color: st === "pending" ? "var(--text-dim)" : "var(--text)" }}>{t}</span>
+              {/* 02 · Execute — elevation encodes state: live work is literally closer */}
+              <Stage label="02 · Execute">
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {tasks.map((t, i) => {
+                    const st = i < done ? "done" : i === done && running ? "running" : "pending";
+                    const res = results[i];
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          background: st === "running" ? "var(--surface-2)" : "var(--surface-1)",
+                          border: `1px solid ${st === "running" ? "rgba(50,145,255,.35)" : "var(--border)"}`,
+                          borderRadius: "var(--r-card)",
+                          padding: 12,
+                          opacity: st === "pending" ? 0.5 : 1,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <PixelAgent name={spriteFor(worker)} size={16} />
+                          <span style={{ ...text("ui"), ...shrinkable }}>{workerName}</span>
+                          <span style={{ flex: 1 }} />
+                          <span style={tag(st === "done" ? "ok" : st === "running" ? "running" : "neutral")}>
+                            {st === "running" && <span style={dot("running", 6)} />}
+                            {st}
+                          </span>
+                        </div>
+                        <div style={{ ...text("caption", "var(--text-mid)"), lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                          {res ? String(res.payload.text ?? "") : t}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Stage>
+
+              {/* 03 · Synthesize */}
+              <Stage label="03 · Synthesize">
+                {final ? (
+                  <div style={{ ...surface2, padding: 14 }}>
+                    <div style={text("body", "var(--text-hi)")}>
+                      <Markdown text={String(final.payload.text ?? "")} />
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* handoffs */}
-          {handoffs.map((m, i) => (
-            <ArenaMessage key={i} m={m.payload as unknown as ArenaMsg} left={m.payload.from_type === "planner"} />
-          ))}
-
-          {/* synthesis */}
-          {final && (
-            <div style={{ background: "linear-gradient(180deg, rgba(var(--accent-rgb),.06), transparent 82%)", border: "1px solid rgba(var(--accent-rgb),.3)", borderRadius: 11, padding: "13px 15px", display: "flex", flexDirection: "column", gap: 8 }}>
-              <span style={{ ...tagStyle("accent"), alignSelf: "flex-start" }}>SYNTHESIS</span>
-              <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
-                <Markdown text={String(final.payload.text ?? "")} />
-              </div>
-            </div>
-          )}
-
-          {running && !final && (
-            <div style={{ textAlign: "center", padding: "4px 0" }}>
-              <span style={{ display: "inline-flex", gap: 4 }}>
-                {[0, 0.18, 0.36].map((d, i) => (
-                  <span key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: `adaType 1.2s ${d}s infinite` }} />
-                ))}
-              </span>
+                  </div>
+                ) : (
+                  <div style={{ border: "1px dashed var(--border-strong)", borderRadius: "var(--r-card)", padding: "28px 16px", textAlign: "center", display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+                    <span style={text("caption", "var(--text-lo)")}>{running ? "Atlas is waiting on the workers…" : "Synthesis appears once every subtask returns."}</span>
+                  </div>
+                )}
+              </Stage>
             </div>
           )}
           <div ref={endRef} />
