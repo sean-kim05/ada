@@ -260,16 +260,31 @@ function PunchA({ size = 22, color = "var(--accent)" }: { size?: number; color?:
   );
 }
 
-const NAV = [
-  { name: "Chat", view: "deck" as const },
-  { name: "Agent Trace", view: "deck" as const },
-  { name: "Fleet", view: "fleet" as const },
-  { name: "Arena", view: "arena" as const },
-  { name: "Mission", view: "mission" as const },
-  { name: "Calendar", view: "deck" as const },
-  { name: "Tasks", view: "deck" as const },
-  { name: "Docs", view: "docs" as const, pill: "RAG" },
-  { name: "Router", view: "router" as const, pill: "LOCAL" },
+type ViewKey = "deck" | "fleet" | "arena" | "mission" | "docs" | "router";
+type NavItem = { name: string; view: ViewKey; icon: string };
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "Workspace",
+    items: [
+      { name: "Chat", view: "deck", icon: "Chat" },
+      { name: "Agent Trace", view: "deck", icon: "Agent Trace" },
+      { name: "Fleet", view: "fleet", icon: "Fleet" },
+      { name: "Arena", view: "arena", icon: "Arena" },
+      { name: "Mission", view: "mission", icon: "Mission" },
+    ],
+  },
+  {
+    label: "Secretary",
+    items: [
+      { name: "Calendar", view: "deck", icon: "Calendar" },
+      { name: "Tasks", view: "deck", icon: "Tasks" },
+      { name: "Docs", view: "docs", icon: "Docs" },
+    ],
+  },
+  {
+    label: "System",
+    items: [{ name: "Router", view: "router", icon: "Router" }],
+  },
 ];
 
 /* ── accent themes (swaps --accent-rgb at the root) ── */
@@ -323,8 +338,8 @@ export default function App() {
   const [clock, setClock] = useState(() => Date.now() / 1000);
   const [accent, setAccent] = useState<string>(() => localStorage.getItem("ada.accent.v2") || "amber");
   const [grid, setGrid] = useState<boolean>(() => localStorage.getItem("ada.grid") !== "0");
-  const chatEnd = useRef<HTMLDivElement>(null);
-  const traceEnd = useRef<HTMLDivElement>(null);
+  const chatScroll = useRef<HTMLDivElement>(null);
+  const traceScroll = useRef<HTMLDivElement>(null);
 
   // No accent hue any more — identity comes from the punch-card mark + type.
   // Keep --accent-rgb defined (white) so any legacy rgba(var(--accent-rgb),…) stays neutral.
@@ -333,11 +348,14 @@ export default function App() {
     document.documentElement.style.setProperty("--tex-op", "0");
   }, []);
 
+  // Autoscroll by pinning scrollTop to the bottom — never scrollIntoView (it breaks the app).
   useEffect(() => {
-    chatEnd.current?.scrollIntoView({ behavior: "smooth" });
+    const el = chatScroll.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [msgs, running]);
   useEffect(() => {
-    traceEnd.current?.scrollIntoView({ behavior: "smooth" });
+    const el = traceScroll.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [events]);
 
   // launcher agent types + the always-on fleet feed (every agent, one socket)
@@ -407,247 +425,193 @@ export default function App() {
     routerStats && routerStats.total_calls
       ? Math.round((routerStats.local_calls / routerStats.total_calls) * 100)
       : 0;
-  const status = running ? "RUNNING" : events.length ? "DONE" : "READY";
-  const statusColor = running ? "var(--accent)" : events.length ? "var(--accent)" : "var(--text-faint)";
+  const traceState: AgentState = running ? "running" : events.length ? "ok" : "idle";
+  const statusLabel = running ? "Running" : events.length ? "Done" : "Ready";
+  const runningCount = Object.values(fleet).filter((r) => r.status === "running").length;
+  const openTasks = tasks.filter((t) => !t.done).length;
+  const navCount = (name: string): number | null =>
+    name === "Fleet" ? runningCount || null : name === "Tasks" ? openTasks || null : name === "Calendar" ? cal.events.length || null : null;
 
   return (
-    <div style={{ position: "relative", zIndex: 1, display: "grid", gridTemplateColumns: "236px minmax(0,1fr)", minHeight: "calc(100vh / 1.5)" }}>
-      {/* ═══ LEFT RAIL ═══ */}
+    <div style={{ position: "relative", zIndex: 1, display: "grid", gridTemplateColumns: "var(--w-sidebar) minmax(0,1fr)", minHeight: "calc(100vh / 1.5)" }}>
+      {/* ═══ SIDEBAR ═══ */}
       <aside
         style={{
           position: "sticky",
           top: 0,
           height: "calc(100vh / 1.5)",
-          borderRight: "1px solid var(--line)",
-          background: "linear-gradient(180deg, rgba(255,255,255,.014), transparent 40%)",
+          width: "var(--w-sidebar)",
+          borderRight: "1px solid var(--border)",
+          background: "var(--surface-1)",
           display: "flex",
           flexDirection: "column",
-          padding: "20px 16px",
+          padding: "16px 12px",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-          <div
-            style={{
-              width: 38,
-              height: 38,
-              flex: "none",
-              borderRadius: 10,
-              background: "linear-gradient(160deg,#161b24,#0d1017)",
-              border: "1px solid rgba(var(--accent-rgb),.42)",
-              boxShadow: "0 0 24px -8px rgba(var(--accent-rgb),.7), inset 0 1px 0 rgba(255,255,255,.05)",
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            <PunchA size={23} />
+        {/* brand */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 8px", marginBottom: 20 }}>
+          <div style={{ width: 30, height: 30, flex: "none", borderRadius: "var(--r-card)", background: "var(--surface-2)", border: "1px solid var(--border)", display: "grid", placeItems: "center" }}>
+            <PunchA size={17} color="var(--text-hi)" />
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 5 }}>
-              <span style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-.015em", lineHeight: 0.85 }}>Ada</span>
-              <span
-                style={{
-                  width: 6,
-                  height: 15,
-                  marginBottom: 2,
-                  background: "var(--accent)",
-                  borderRadius: 1,
-                  boxShadow: "0 0 8px rgba(var(--accent-rgb),.6)",
-                  animation: "adaCursor 1.1s steps(1) infinite",
-                }}
-              />
-            </div>
-            <span style={mono(8, "var(--text-faint)", ".2em")}>AGENT OS TERMINAL</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ ...text("title"), lineHeight: 1.15 }}>Ada</div>
+            <div style={text("caption", "var(--text-lo)")}>Agent OS Terminal</div>
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 7, margin: "14px 0 0 3px" }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", animation: "adaPulse 2.4s ease-in-out infinite" }} />
-          <span style={mono(9.5, "var(--accent)", ".14em")}>ONLINE</span>
-          <span style={mono(9.5, "var(--text-faint)", ".1em")}>· HAIKU</span>
-        </div>
-
-        <nav style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 28 }}>
-          {NAV.map((n) => {
-            const active = view === n.view && (n.view !== "deck" || n.name === "Chat");
-            return (
-            <div
-              key={n.name}
-              onClick={() => setView(n.view)}
-              className={`nav-item${active ? " active" : ""}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 11,
-                padding: "9px 11px",
-                borderRadius: 8,
-                cursor: "pointer",
-                color: active ? "var(--accent)" : "var(--text-dim)",
-                background: active ? "rgba(var(--accent-rgb),.08)" : undefined,
-                boxShadow: active ? "inset 2px 0 0 var(--accent)" : undefined,
-              }}
-            >
-              <NavIcon name={n.name} />
-              <span style={{ fontSize: 13.5, fontWeight: 500 }}>{n.name}</span>
-              {n.pill && <span style={{ ...mono(8.5, "var(--text-faint)", ".1em"), border: "1px solid var(--line)", borderRadius: 4, padding: "1px 4px", marginLeft: "auto" }}>{n.pill}</span>}
+        {/* nav — three sentence-case groups; live counts turn it into a status board */}
+        <nav style={{ display: "flex", flexDirection: "column", gap: 24, flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+          {NAV_GROUPS.map((g) => (
+            <div key={g.label}>
+              <div style={{ ...text("caption", "var(--text-lo)"), padding: "0 8px", marginBottom: 6 }}>{g.label}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                {g.items.map((it) => {
+                  const active = view === it.view && (it.view !== "deck" || it.name === "Chat");
+                  const count = navCount(it.name);
+                  return (
+                    <div
+                      key={it.name}
+                      onClick={() => setView(it.view)}
+                      className={`nav-item${active ? " active" : ""}`}
+                      style={{
+                        height: "var(--h-navrow)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "0 8px",
+                        borderRadius: "var(--r-control)",
+                        cursor: "pointer",
+                        color: active ? "var(--text-hi)" : "var(--text-mid)",
+                        background: active ? "var(--surface-active)" : undefined,
+                      }}
+                    >
+                      <NavIcon name={it.icon} />
+                      <span style={{ ...text("ui", "inherit") }}>{it.name}</span>
+                      {count != null && <span style={{ marginLeft: "auto", ...mono(11, "var(--text-lo)") }}>{count}</span>}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            );
-          })}
+          ))}
         </nav>
 
-        <div style={{ marginTop: "auto", borderTop: "1px solid var(--line)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
-          <RailStat label="SPEND TODAY" value={`$${t.cost.toFixed(3)}`} accent />
-          <RailStat label="TOOL CALLS" value={String(t.tools)} />
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", ...mono(9, "var(--text-faint)", ".1em"), marginBottom: 6 }}>
-              <span>LOCAL {localPct}%</span>
-              <span>API {100 - localPct}%</span>
-            </div>
-            <div style={{ height: 5, borderRadius: 4, overflow: "hidden", display: "flex", background: "rgba(255,255,255,.05)" }}>
-              <div style={{ width: `${localPct}%`, background: "var(--accent)" }} />
-              <div style={{ width: 2 }} />
-              <div style={{ flex: 1, background: "rgba(255,255,255,.22)" }} />
-            </div>
+        {/* footer — two status rows, nothing else */}
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 8px" }}>
+            <span style={text("caption", "var(--text-lo)")}>Spend today</span>
+            <span style={mono(12, "var(--text-hi)")}>${t.cost.toFixed(3)}</span>
           </div>
-          <ThemeBar accent={accent} setAccent={setAccent} grid={grid} setGrid={setGrid} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 8px" }}>
+            <span style={text("caption", "var(--text-lo)")}>Local share</span>
+            <span style={mono(12, "var(--text-mid)")}>{localPct}%</span>
+          </div>
         </div>
       </aside>
 
       {/* ═══ WORKSPACE ═══ */}
-      <main style={{ padding: "18px 20px 22px", display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+      <main style={{ padding: view === "deck" ? 0 : "18px 20px 22px", display: "flex", flexDirection: "column", gap: view === "deck" ? 0 : 16, minWidth: 0 }}>
         {view === "deck" ? (
         <>
-        {/* header */}
-        <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-            <span style={mono(12, "var(--text)", ".14em")}>MISSION DECK</span>
-            <span style={mono(11, "var(--text-faint)", ".1em")}>M1 · SECRETARY · LIVE</span>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <HeaderPill text="ROUTER · AUTO" />
-            <HeaderPill text="MODEL · HAIKU" />
-            <HeaderPill text={`CTX · ${events.length ? Math.min(99, events.length * 3) : 0}%`} accent />
-          </div>
+        {/* top bar — plain metadata, no chips */}
+        <header style={{ height: "var(--h-topbar)", flex: "none", display: "flex", alignItems: "center", gap: 12, padding: "0 20px", borderBottom: "1px solid var(--border)" }}>
+          <span style={text("title")}>Chat</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ ...text("caption", "var(--text-lo)"), ...shrinkable }}>
+            Haiku · Auto routing · {events.length ? Math.min(99, events.length * 3) : 0}% context
+          </span>
+          <span style={{ width: 1, height: 16, background: "var(--border)", flex: "none" }} />
+          <span style={{ ...mono(11, "var(--text-lo)"), border: "1px solid var(--border)", borderRadius: "var(--r-tag)", padding: "2px 6px", flex: "none" }}>⌘K</span>
         </header>
 
-        {/* top zone: chat + trace */}
-        <section style={{ display: "grid", gridTemplateColumns: "minmax(0,1.15fr) minmax(0,1fr)", gap: 16, height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
-          {/* CHAT */}
-          <div style={panel}>
-            <div style={phead}>
-              <span style={mono(11, "var(--text-dim)", ".16em")}>CHAT</span>
-              <span style={mono(10, "var(--text-faint)", ".08em")}>SESSION · TODAY</span>
-            </div>
-            {msgs.length <= 1 && !running ? (
-              <div style={{ flex: 1, overflowY: "auto", padding: "var(--s5) var(--s5)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 0 }}>
-                <div style={{ opacity: 0.5, marginBottom: 18 }}><PunchA size={34} /></div>
-                <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-.01em", color: "var(--text)", marginBottom: 8 }}>How can I help, Sean?</div>
-                <div style={{ ...mono(11.5, "var(--text-faint)", ".02em"), maxWidth: 300, textAlign: "center", lineHeight: 1.6, marginBottom: 24 }}>
-                  Your secretary and agent runtime. Ask, and watch the plan run live on the right.
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 340 }}>
-                  {CHAT_SUGGESTIONS.map((s) => (
-                    <button
-                      key={s}
-                      className="row-hover"
-                      onClick={() => sendText(s)}
-                      style={{ textAlign: "left", background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: "var(--r2)", padding: "11px 13px", cursor: "pointer", color: "var(--text-dim)", fontFamily: "var(--sans)", fontSize: 12.5, display: "flex", alignItems: "center", gap: 10 }}
-                    >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none", opacity: 0.85 }}><path d="M5 12h13M12 5l7 7-7 7" /></svg>
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div style={{ flex: 1, overflowY: "auto", padding: "var(--s5) 18px", display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 18 }}>
+        {/* home: conversation | rule | trace — no panels, no nested boxes */}
+        <section style={{ display: "flex", height: "calc(100vh / 1.5 - var(--h-topbar))", minHeight: 520 }}>
+          {/* CONVERSATION */}
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <div ref={chatScroll} style={scroller}>
+              <div style={{ maxWidth: "var(--w-measure)", margin: "0 auto", padding: "40px 32px 24px", display: "flex", flexDirection: "column", gap: 32 }}>
                 {msgs.map((m, i) => (
-                  <Message key={i} msg={m} />
+                  <Message key={i} msg={m} serif={i === 0 && m.role === "ada"} />
                 ))}
                 {running && <Working />}
-                <div ref={chatEnd} />
+                {msgs.length <= 1 && !running && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, paddingLeft: 28 }}>
+                    {CHAT_SUGGESTIONS.map((s) => (
+                      <button key={s} onClick={() => sendText(s)} style={{ ...btn("ghost"), height: "auto", padding: "8px 12px", ...text("ui", "var(--text-mid)") }}>{s}</button>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-            <div style={{ flex: "none", padding: "14px 16px", borderTop: "1px solid var(--line)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 11, padding: "4px 4px 4px 14px" }}>
+            </div>
+            {/* composer */}
+            <div style={{ flex: "none", padding: "12px 20px 18px", maxWidth: "calc(var(--w-measure) + 40px)", width: "100%", margin: "0 auto" }}>
+              <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-bubble)", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
                 <input
                   className="bare"
                   value={input}
                   placeholder={running ? "Steer Ada while she works…" : "Message Ada…"}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendText(input)}
-                  style={{ flex: 1, color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13.5, padding: "8px 0" }}
+                  style={{ ...text("body", "var(--text-hi)"), background: "transparent", width: "100%" }}
                 />
-                <button
-                  className="btn-accent"
-                  onClick={() => sendText(input)}
-                  title={running ? "Steer the running task" : "Send"}
-                  style={{ width: 34, height: 34, flex: "none", borderRadius: 8, background: "var(--accent)", border: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", opacity: 1 }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0c0e11" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M5 12h13M12 5l7 7-7 7" />
-                  </svg>
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <span style={text("caption", "var(--text-lo)")}>Tools · 9</span>
+                  <span style={{ flex: 1 }} />
+                  <button
+                    onClick={() => sendText(input)}
+                    title={running ? "Steer the running task" : "Send"}
+                    style={{ width: 28, height: 28, flex: "none", borderRadius: "50%", background: "var(--action-bg)", border: "none", display: "grid", placeItems: "center", cursor: "pointer" }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--action-fg)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 12h13M12 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* AGENT TRACE (hero) */}
-          <div style={{ ...panel, boxShadow: "inset 0 1px 0 rgba(255,255,255,.03), 0 1px 2px rgba(0,0,0,.45), 0 0 40px -20px rgba(var(--accent-rgb),.3)" }}>
-            <div style={phead}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={mono(11, "var(--text)", ".16em")}>AGENT TRACE</span>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 5, ...tagStyle("accent"), fontWeight: 400 }}>
-                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: running ? "adaBlink 1.1s infinite" : "none" }} />
-                  {status}
-                </span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={mono(10.5, "var(--text-faint)")}>{events.length} steps</span>
-                <button className="btn-ghost" onClick={replay} disabled={running} style={{ display: "inline-flex", alignItems: "center", gap: 5, ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "4px 9px", cursor: running ? "default" : "pointer" }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5" />
-                  </svg>
-                  REPLAY
-                </button>
+          {/* single vertical rule */}
+          <div style={{ width: 1, background: "var(--border)", flex: "none" }} />
+
+          {/* TRACE */}
+          <div style={{ width: "var(--w-trace)", flex: "none", display: "flex", flexDirection: "column", minWidth: 0 }}>
+            <div style={{ height: "var(--h-panelhead)", flex: "none", position: "relative", display: "flex", alignItems: "center", gap: 8, padding: "0 16px", borderBottom: "1px solid var(--border)" }}>
+              <span style={text("ui")}>Trace</span>
+              {running && <span style={{ ...tag("running") }}><span style={dot("running", 6)} />live</span>}
+              <span style={{ flex: 1 }} />
+              <span style={mono(11, "var(--text-lo)")}>{events.length} steps</span>
+              <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 2 }}>
+                <div style={{ height: 2, width: `${running ? Math.min(90, events.length * 12) : events.length ? 100 : 0}%`, background: running ? "var(--state-running)" : "var(--state-ok)", transition: "width var(--t-arrive)" }} />
               </div>
             </div>
-            <div style={{ flex: 1, overflowY: "auto", padding: "18px 16px", display: "flex", flexDirection: "column", gap: 0 }}>
+            <div ref={traceScroll} style={{ ...scroller, padding: "8px 0" }}>
               {events.length === 0 ? (
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, textAlign: "center", padding: "24px 20px" }}>
-                  <div style={{ opacity: 0.35 }}><PunchA size={30} /></div>
-                  <div style={mono(12, "var(--text-dim)", ".04em")}>waiting for a run</div>
-                  <div style={{ ...mono(11, "var(--text-faint)", ".02em"), maxWidth: 240, lineHeight: 1.6 }}>
-                    Send a message and Ada's plan streams here — <span style={{ color: "var(--text-dim)" }}>plan → act → observe</span>.
-                  </div>
+                <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, textAlign: "center", padding: "40px 24px" }}>
+                  <div style={{ opacity: 0.4 }}><PunchA size={30} color="var(--text-hi)" /></div>
+                  <div style={text("title")}>No active run</div>
+                  <div style={{ ...text("caption", "var(--text-lo)"), maxWidth: 230 }}>Send a message and each step — plan, act, observe — appears here.</div>
                 </div>
               ) : (
-                <>
-                  <div style={{ ...mono(10, "var(--text-faint)", ".08em"), paddingLeft: 2, marginBottom: 14 }}>
-                    {events[0].run_id} · plan → act → observe
-                  </div>
-                  {events.map((e, i) => (
-                    <TraceRow key={i} e={e} last={i === events.length - 1} active={running && i === events.length - 1} />
-                  ))}
-                </>
+                events.map((e, i) => (
+                  <TraceRow key={i} e={e} last={i === events.length - 1} active={running && i === events.length - 1} />
+                ))
               )}
-              <div ref={traceEnd} />
             </div>
-            <div style={{ flex: "none", borderTop: "1px solid var(--line)", background: "rgba(255,255,255,.015)", padding: "11px 16px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, ...mono(11, statusColor, ".06em") }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor }} />
-                {status}
+            <div style={{ height: "var(--h-panelhead)", flex: "none", borderTop: "1px solid var(--border)", padding: "0 16px", display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, ...text("caption", "var(--text-lo)") }}>
+                <span style={dot(traceState, 6)} />
+                {statusLabel}
               </span>
-              <span style={{ width: 1, height: 14, background: "var(--line-2)" }} />
-              <span style={mono(12, "var(--text)")}>
-                <span style={mono(10, "var(--text-faint)")}>TOOLS </span>
-                {t.tools}
-              </span>
-              <span style={mono(12, "var(--text)")}>{fmtMs(t.timeMs)}</span>
-              <span style={mono(12, "var(--accent)")}>${t.cost.toFixed(3)}</span>
-              <span style={{ marginLeft: "auto", ...mono(11, "var(--text-faint)") }}>{t.tokens ? `${t.tokens} tok` : "—"}</span>
+              <span style={{ flex: 1 }} />
+              <span style={mono(11, "var(--text-lo)")}>{fmtMs(t.timeMs)}</span>
+              <span style={mono(12, "var(--text-hi)")}>${t.cost.toFixed(3)}</span>
             </div>
           </div>
         </section>
+
+        {/* secretary surfaces below the fold */}
+        <div style={{ padding: "16px 20px 22px", display: "flex", flexDirection: "column", gap: 16 }}>
 
         {/* secondary panels */}
         <section style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, alignItems: "start" }}>
@@ -672,6 +636,7 @@ export default function App() {
             <RemindersPanel tasks={tasks} />
           </div>
         </section>
+        </div>
         </>
         ) : view === "fleet" ? (
           <FleetView
@@ -703,49 +668,58 @@ export default function App() {
 }
 
 /* ── chat pieces ───────────────────────────── */
-function Avatar() {
+// Ada's replies are unboxed — a 20px mark tile, name, timestamp, then plain body text.
+// Only the user gets a bubble. Halving the border count is the biggest calm-per-line win.
+function AdaTile() {
   return (
-    <div style={{ width: 26, height: 26, flex: "none", borderRadius: "50%", background: "rgba(var(--accent-rgb),.1)", border: "1px solid rgba(var(--accent-rgb),.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <PunchA size={15} />
-    </div>
+    <span style={{ width: 20, height: 20, flex: "none", borderRadius: "var(--r-control)", background: "var(--surface-2)", display: "grid", placeItems: "center" }}>
+      <PunchA size={12} color="var(--text-hi)" />
+    </span>
   );
 }
-function Message({ msg }: { msg: ChatMsg }) {
+function Message({ msg, serif }: { msg: ChatMsg; serif?: boolean }) {
   if (msg.role === "user") {
     return (
-      <div className="rise" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5, alignSelf: "flex-end", maxWidth: "82%" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          {msg.time && <span style={mono(10, "var(--text-faint)")}>{msg.time}</span>}
-          <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-dim)" }}>You</span>
-        </div>
-        <div style={{ background: "rgba(var(--accent-rgb),.1)", border: "1px solid rgba(var(--accent-rgb),.24)", borderRadius: "12px 4px 12px 12px", padding: "11px 14px", fontSize: 13.5, lineHeight: 1.5, color: "var(--text)" }}>{msg.text}</div>
+      <div className="rise" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5, alignSelf: "flex-end", maxWidth: "85%" }}>
+        <div style={{ ...surface2, border: "none", borderRadius: "var(--r-bubble)", padding: "12px 16px", ...text("body", "var(--text-hi)") }}>{msg.text}</div>
+        {msg.time && <span style={mono(11, "var(--text-lo)")}>{msg.time}</span>}
       </div>
     );
   }
   return (
-    <div className="rise" style={{ display: "flex", gap: 11, maxWidth: "90%" }}>
-      <Avatar />
-      <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Ada</span>
-          {msg.time && <span style={mono(10, "var(--text-faint)")}>{msg.time}</span>}
-        </div>
-        <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: "4px 12px 12px 12px", padding: "11px 13px", fontSize: 13.5, lineHeight: 1.5, color: "var(--text)" }}><Markdown text={msg.text} /></div>
+    <div className="rise" style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <AdaTile />
+        <span style={text("ui")}>Ada</span>
+        {msg.time && <span style={mono(11, "var(--text-lo)")}>{msg.time}</span>}
+      </div>
+      <div
+        style={{
+          paddingLeft: 28,
+          ...(serif
+            ? { fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: 16, lineHeight: "26px", color: "var(--text-mid)" }
+            : text("body", "var(--text-hi)")),
+        }}
+      >
+        <Markdown text={msg.text} />
       </div>
     </div>
   );
 }
 function Working() {
   return (
-    <div style={{ display: "flex", gap: 11, maxWidth: "90%" }}>
-      <Avatar />
-      <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, width: "fit-content" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <AdaTile />
+        <span style={text("ui")}>Ada</span>
+      </div>
+      <div style={{ paddingLeft: 28, display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ display: "flex", gap: 4 }}>
           {[0, 0.18, 0.36].map((d, i) => (
-            <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", animation: `adaType 1.2s ${d}s infinite` }} />
+            <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--state-running)", animation: `adaType 1.2s ${d}s infinite` }} />
           ))}
         </div>
-        <span style={mono(11, "var(--text-dim)", ".06em")}>running plan · watch the trace →</span>
+        <span style={text("caption", "var(--text-lo)")}>working…</span>
       </div>
     </div>
   );
