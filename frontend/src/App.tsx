@@ -1768,7 +1768,7 @@ function TerminalPanel({ run }: { run: FleetRun }) {
   const logs = run.events.filter((e) => e.type === "log");
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView();
+    { const _e = endRef.current?.parentElement; if (_e) _e.scrollTop = _e.scrollHeight; }
   }, [logs.length]);
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px", background: "#050506", borderRadius: "0 0 13px 13px" }}>
@@ -1966,7 +1966,7 @@ function ArenaView({ agentTypes }: { agentTypes: AgentType[] }) {
   const [running, setRunning] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    { const _e = endRef.current?.parentElement; if (_e) _e.scrollTop = _e.scrollHeight; }
   }, [msgs.length]);
 
   const nameOf = (t: string) => agentTypes.find((x) => x.type === t)?.name ?? t;
@@ -2172,7 +2172,7 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
   const [running, setRunning] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    { const _e = endRef.current?.parentElement; if (_e) _e.scrollTop = _e.scrollHeight; }
   }, [events.length]);
 
   const start = async () => {
