@@ -214,6 +214,27 @@ function typeColor(type?: string): string {
     : "var(--accent)";
 }
 
+// The crew: each agent type maps to a pixel-sprite station + a human role label.
+// Ada herself keeps the punch-card mark and is never a crewmate.
+function spriteFor(type?: string): string {
+  switch (type) {
+    case "researcher": return "astronaut"; // Scout
+    case "planner": return "commander";    // Commander
+    case "claude_code": return "engineer"; // Engineer
+    case "arena": return "comms";          // Comms
+    default: return "commander";
+  }
+}
+function crewRole(type?: string): string {
+  switch (type) {
+    case "researcher": return "Scout · researcher";
+    case "planner": return "Commander · planner";
+    case "claude_code": return "Engineer · coder";
+    case "arena": return "Comms · dialogue";
+    default: return "Crew";
+  }
+}
+
 // The "punch card" A — the ADA brand mark, a matrix of gold cells forming an A.
 const A_BITS = [
   "...1...",
@@ -605,7 +626,7 @@ export default function App() {
                     {events[0].run_id} · plan → act → observe
                   </div>
                   {events.map((e, i) => (
-                    <TraceRow key={i} e={e} last={i === events.length - 1} />
+                    <TraceRow key={i} e={e} last={i === events.length - 1} active={running && i === events.length - 1} />
                   ))}
                 </>
               )}
@@ -731,75 +752,96 @@ function Working() {
 }
 
 /* ── trace timeline ────────────────────────── */
-function TraceRow({ e, last }: { e: AgentEvent; last: boolean }) {
-  const lat = e.latency_ms != null ? `${e.latency_ms}ms` : "";
+// One calm anatomy for every event: a node punched through a single spine, a title,
+// a muted sub-line, right-aligned latency, and one expandable payload line — no cards,
+// no chips, no nested boxes.
+function traceMeta(e: AgentEvent): { state: AgentState; title: string; sub?: string; payload?: string } {
   const isLocal = e.model?.includes("local");
-  const kind = e.type;
-  const dot =
-    kind === "final" ? "var(--accent)" : kind === "error" ? "var(--red)" : kind === "message" ? "var(--accent)" : kind === "tool_result" ? "rgba(var(--accent-rgb),.6)" : "var(--text-dim)";
-  const glow = kind === "final" ? "0 0 10px rgba(var(--accent-rgb),.7)" : "none";
-
-  let content: JSX.Element | null = null;
-  if (kind === "tool_call") {
-    const detail = fmt(e.payload.input);
-    content = (
-      <div style={{ background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "11px 13px", display: "flex", flexDirection: "column", gap: 7 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={tagStyle()}>TOOL</span>
-          <span style={{ ...mono(12, "var(--text)"), fontWeight: 500 }}>{String(e.payload.tool)}</span>
-          <span style={{ flex: 1 }} />
-          {e.model && <span style={modelBadge}>{isLocal ? "QWEN" : "CLAUDE"}</span>}
-          <span style={mono(11, "var(--text-faint)")}>{lat}</span>
-        </div>
-        {detail && <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-dim)", wordBreak: "break-word" }}>{detail}</div>}
-      </div>
-    );
-  } else if (kind === "tool_result") {
-    content = (
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "1px 2px" }}>
-        <span style={mono(12, "var(--accent)")}>↳</span>
-        <span style={{ ...mono(12, "var(--text-dim)"), lineHeight: 1.45, flex: 1, wordBreak: "break-word" }}>{fmt(e.payload.output)}</span>
-        <span style={mono(10.5, "var(--text-faint)")}>{lat}</span>
-      </div>
-    );
-  } else if (kind === "final") {
-    content = (
-      <div style={{ background: "linear-gradient(180deg, rgba(var(--accent-rgb),.06), transparent 82%)", border: "1px solid rgba(var(--accent-rgb),.3)", borderRadius: 10, padding: "11px 13px", display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={tagStyle("accent")}>FINAL</span>
-          <span style={{ flex: 1 }} />
-          <span style={modelBadge}>CLAUDE</span>
-        </div>
-        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)" }}><Markdown text={String(e.payload.text ?? "")} /></div>
-      </div>
-    );
-  } else if (kind === "error") {
-    content = (
-      <div style={{ background: "rgba(255,138,128,.05)", border: "1px solid rgba(255,138,128,.3)", borderRadius: 10, padding: "11px 13px", display: "flex", flexDirection: "column", gap: 7 }}>
-        <span style={tagStyle("error")}>ERROR</span>
-        <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-dim)" }}>{String(e.payload.message ?? "")}</div>
-      </div>
-    );
-  } else if (kind === "message") {
-    // A user steer injected mid-task (payload.steer), or an agent→agent handoff (Arena/Mission).
-    const steer = Boolean(e.payload.steer);
-    content = (
-      <div style={{ background: steer ? "rgba(var(--accent-rgb),.06)" : "var(--panel-2)", border: `1px solid ${steer ? "rgba(var(--accent-rgb),.28)" : "var(--line)"}`, borderRadius: 10, padding: "9px 13px", display: "flex", alignItems: "baseline", gap: 9 }}>
-        <span style={{ ...mono(10, "var(--accent)", ".1em"), fontWeight: 600, flex: "none" }}>{steer ? "YOU ▸" : `${String(e.payload.from ?? "msg")} ▸`}</span>
-        <span style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text)", flex: 1, wordBreak: "break-word" }}>{String(e.payload.text ?? "")}</span>
-        {steer && <span style={{ ...mono(9, "var(--text-faint)", ".1em"), flex: "none" }}>STEER</span>}
-      </div>
-    );
+  const model = e.model ? (isLocal ? "Qwen" : "Claude") : undefined;
+  switch (e.type) {
+    case "tool_call":
+      return { state: "ok", title: String(e.payload.tool ?? "tool"), sub: "Tool call", payload: fmt(e.payload.input) };
+    case "tool_result":
+      return { state: "ok", title: "Observed result", sub: model, payload: fmt(e.payload.output) };
+    case "final":
+      return { state: "ok", title: "Final response", sub: model, payload: String(e.payload.text ?? "") };
+    case "error":
+      return { state: "error", title: "Error", payload: String(e.payload.message ?? "") };
+    case "message": {
+      const steer = Boolean(e.payload.steer);
+      const title = steer ? "You steered the run" : `${String(e.payload.from ?? "Agent")} → ${String(e.payload.to ?? "Agent")}`;
+      return { state: steer ? "running" : "ok", title, payload: String(e.payload.text ?? "") };
+    }
+    default:
+      return { state: "ok", title: String(e.type).replace(/_/g, " "), payload: fmt(e.payload) };
   }
-  if (!content) return null;
+}
+
+function TraceRow({ e, last, active = false }: { e: AgentEvent; last: boolean; active?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const lat = e.latency_ms != null ? `${e.latency_ms}ms` : "";
+  const { state, title, sub, payload } = traceMeta(e);
+  const st: AgentState = active ? "running" : state;
+  const nodeColor = st === "error" ? "transparent" : st === "running" ? "var(--state-running)" : "var(--state-ok)";
 
   return (
-    <div className="rise" style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr)", gap: 11 }}>
+    <div
+      className="rise row-hover"
+      onClick={() => payload && setOpen((o) => !o)}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "20px minmax(0,1fr)",
+        columnGap: 12,
+        padding: "8px 14px",
+        cursor: payload ? "pointer" : "default",
+        borderLeft: active ? "2px solid var(--state-running)" : "2px solid transparent",
+        background: active ? "rgba(255,255,255,.045)" : undefined,
+      }}
+    >
+      {/* spine + node */}
       <div style={{ position: "relative" }}>
-        {!last && <div style={{ position: "absolute", left: "50%", top: 5, bottom: -14, width: 1, transform: "translateX(-.5px)", background: "var(--line)" }} />}
-        <div style={{ position: "absolute", left: "50%", top: 5, width: 9, height: 9, borderRadius: "50%", transform: "translateX(-50%)", border: "2px solid var(--bg)", background: dot, boxShadow: glow }} />
+        {!last && <div style={{ position: "absolute", left: 10, top: 8, bottom: -8, width: 1, transform: "translateX(-.5px)", background: "var(--border)" }} />}
+        <div
+          style={{
+            position: "absolute",
+            left: 10,
+            top: 6,
+            width: 7,
+            height: 7,
+            borderRadius: 7,
+            transform: "translateX(-50%)",
+            background: nodeColor,
+            border: st === "error" ? "1.5px solid var(--state-error)" : undefined,
+            boxShadow: st === "error" ? "0 0 0 4px var(--bg)" : `0 0 0 4px var(--bg)`,
+            animation: st === "running" ? "adaPulse var(--pulse)" : undefined,
+          }}
+        />
       </div>
-      <div style={{ paddingBottom: 14, minWidth: 0 }}>{content}</div>
+      {/* body */}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ ...text("ui"), ...shrinkable }}>{title}</span>
+          <span style={{ flex: 1 }} />
+          {lat && <span style={mono(11, "var(--text-lo)")}>{lat}</span>}
+        </div>
+        {sub && <div style={{ ...text("caption", "var(--text-lo)"), marginTop: 2 }}>{sub}</div>}
+        {payload && (
+          <div
+            style={{
+              ...well,
+              ...mono(11, st === "error" ? "var(--state-error-text)" : "var(--text-mid)"),
+              marginTop: 6,
+              padding: "6px 9px",
+              borderRadius: "var(--r-control)",
+              ...(open
+                ? { whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 260, overflowY: "auto" }
+                : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }),
+            }}
+          >
+            {payload}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1540,7 +1582,7 @@ function FleetView(p: FleetProps) {
             {focusRun && focusRun.events.filter((e) => e.type !== "log").length === 0 && (
               <div style={{ ...mono(12, "var(--text-faint)"), padding: "8px 2px" }}>No steps captured yet — the agent is warming up.</div>
             )}
-            {focusRun && focusRun.events.map((e, i) => <TraceRow key={i} e={e} last={i === focusRun.events.length - 1} />)}
+            {focusRun && focusRun.events.map((e, i) => <TraceRow key={i} e={e} last={i === focusRun.events.length - 1} active={focusRun.status === "running" && i === focusRun.events.length - 1} />)}
           </div>
         )}
         {canMessage && (
@@ -1568,46 +1610,55 @@ function FleetView(p: FleetProps) {
   );
 }
 
+function runState(status: RunStatus): AgentState {
+  return status === "running" ? "running" : status === "error" ? "error" : status === "done" ? "ok" : "idle";
+}
+
 function FleetCard({ id, run, focused, onClick, clock }: { id: string; run: FleetRun; focused: boolean; onClick: () => void; clock: number }) {
   const meta = run.meta;
-  const accent = accentColor(
-    meta?.agent_type === "researcher" ? "cyan"
-      : meta?.agent_type === "planner" ? "violet"
-      : meta?.agent_type === "claude_code" ? "green"
-      : "amber",
-  );
-  const sc = run.status === "running" ? "var(--accent)" : run.status === "error" ? "var(--red)" : "var(--text-dim)";
+  const st = runState(run.status);
+  const role = crewRole(meta?.agent_type);
   const elapsed = meta ? Math.max(0, Math.floor(clock - meta.started_at)) : 0;
   return (
     <div
       onClick={onClick}
       className="row-hover"
-      style={{ background: "var(--panel-2)", border: `1px solid ${focused ? "rgba(var(--accent-rgb),.45)" : "var(--line)"}`, borderRadius: 11, padding: "13px 14px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 9, boxShadow: focused ? "0 0 24px -14px var(--accent)" : undefined }}
+      style={{
+        ...surface2,
+        border: `1px solid ${focused ? "var(--text-hi)" : "var(--border)"}`,
+        borderRadius: "var(--r-card)",
+        padding: 14,
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ width: 24, height: 24, flex: "none", borderRadius: 7, display: "grid", placeItems: "center", color: accent, background: "rgba(255,255,255,.03)", border: `1px solid ${focused ? accent : "var(--line-2)"}`, boxShadow: run.status === "running" ? `0 0 10px -2px ${accent}` : undefined }}>
-          <AgentGlyph type={meta?.agent_type} size={14} />
-        </span>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>{meta?.name ?? "agent"}</span>
-        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5, ...mono(9.5, sc, ".1em") }}>
-          {run.status === "running" && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", animation: "adaBlink 1.1s infinite" }} />}
-          {run.status.toUpperCase()}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <AgentBadge sprite={spriteFor(meta?.agent_type)} state={st} name={meta?.name ?? "agent"} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ ...text("title"), ...shrinkable }}>{meta?.name ?? "agent"}</div>
+          <div style={{ ...text("caption", "var(--text-lo)"), ...shrinkable }}>{role}</div>
+        </div>
+        <span style={{ ...tag(st === "idle" ? "neutral" : st), flex: "none" }}>
+          {st === "running" && <span style={dot("running", 6)} />}
+          {run.status}
         </span>
       </div>
-      <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.4, minHeight: 34, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{meta?.prompt ?? id}</div>
+      <div style={{ ...text("caption", "var(--text-mid)"), minHeight: 32, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{meta?.prompt ?? id}</div>
       {meta?.agent_type === "claude_code" && meta?.workdir && (
-        <div style={{ ...mono(10, "var(--text-faint)", ".02em"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={meta.workdir}>
-          ▸ {shortPath(meta.workdir)}
+        <div style={{ ...mono(10, "var(--text-lo)"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={meta.workdir}>
+          {shortPath(meta.workdir)}
         </div>
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", ...mono(10.5, "var(--text-faint)") }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, ...mono(11, "var(--text-lo)") }}>
         <span>{run.events.length} steps</span>
-        {!!meta?.tokens && <span>· {fmtTokens(meta.tokens)} tok</span>}
-        {!!meta?.cost_usd && <span>· ${meta.cost_usd.toFixed(3)}</span>}
+        {!!meta?.tokens && <span>{fmtTokens(meta.tokens)} tok</span>}
+        {!!meta?.cost_usd && <span>${meta.cost_usd.toFixed(3)}</span>}
         <span style={{ marginLeft: "auto" }}>{fmtUptime(elapsed)}</span>
       </div>
       {run.lastStep && (
-        <div style={{ ...mono(10.5, run.status === "running" ? "var(--accent)" : "var(--text-faint)"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{run.lastStep}</div>
+        <div style={{ ...mono(11, st === "running" ? "#7FBBFF" : "var(--text-lo)"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{run.lastStep}</div>
       )}
     </div>
   );
