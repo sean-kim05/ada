@@ -1,19 +1,91 @@
+/* Ada design tokens — TRUE 1x scale. #root { zoom: 1.5 } stays as a global multiplier.
+   There is no gold/brass accent. The primary action is a white fill. */
+
 :root {
-  --bg: #000000;
-  --panel: #0a0a0a;
-  --panel-2: #111113;
-  --line: rgba(255, 255, 255, 0.09);
-  --line-2: rgba(255, 255, 255, 0.15);
-  --text: #fafafa;
-  --text-dim: rgba(250, 250, 250, 0.58);
-  --text-faint: rgba(250, 250, 250, 0.34);
-  --accent-rgb: 250, 250, 250;
-  --accent: rgb(var(--accent-rgb));
-  --tex-op: 1;
-  --red: #ff8a80;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-  --serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  /* Surfaces — four steps, no more */
+  --bg:              #000000;  /* app canvas; never holds content directly */
+  --surface-1:       #0A0A0A;  /* cards, composer, panels */
+  --surface-2:       #141414;  /* raised inside a panel: user bubble, avatar tile */
+  --surface-active:  #1A1A1A;  /* active nav row only */
+  --surface-well:    #050607;  /* terminal / stdout only, with inset shadow */
+  --surface-overlay: #1A1D22;  /* menus, command palette, tooltips, modals */
+
+  /* Borders — one per boundary, never two */
+  --border:          #1F1F1F;
+  --border-strong:   #262626;
+
+  /* Text — three steps, all AA or better on --bg. There is no fourth. */
+  --text-hi:         #EDEDED;  /* 15.3:1 */
+  --text-mid:        #A1A1A1;  /*  7.9:1 */
+  --text-lo:         #8F8F8F;  /*  6.5:1 — the faintest text step */
+  --text-disabled:   #525252;  /* 2.7:1 — NEVER carries a word. Icons/borders only. */
+
+  /* State */
+  --state-running:   #3291FF;  /* the only animated colour */
+  --state-ok:        #45DE7C;
+  --state-error:     #FF6166;
+  --state-error-text:#FF8B8F;  /* use for error TEXT — #FF6166 is under AA at 12px */
+  --state-idle:      #525252;  /* non-text only */
+
+  /* Primary action: white fill, black text. Max one per screen. */
+  --action-bg:       #EDEDED;
+  --action-fg:       #000000;
+
+  /* Fleet lane hues — six, matched lightness + chroma so no lane shouts louder */
+  --lane-1: oklch(0.72 0.13 250); --lane-1-label: oklch(0.78 0.11 250);
+  --lane-2: oklch(0.72 0.13 160); --lane-2-label: oklch(0.78 0.11 160);
+  --lane-3: oklch(0.72 0.13 75);  --lane-3-label: oklch(0.78 0.11 75);
+  --lane-4: oklch(0.72 0.13 25);  --lane-4-label: oklch(0.78 0.11 25);
+  --lane-5: oklch(0.72 0.13 300); --lane-5-label: oklch(0.78 0.11 300);
+  --lane-6: oklch(0.72 0.13 205); --lane-6-label: oklch(0.78 0.11 205);
+
+  /* Spacing — 4px grid, twelve stops. Nothing may be a raw number, only a stop. */
+  --s-3xs: 2px;  --s-2xs: 4px;  --s-xs: 6px;   --s-sm: 8px;
+  --s-md: 12px;  --s-lg: 16px;  --s-xl: 20px;  --s-2xl: 24px;
+  --s-3xl: 32px; --s-4xl: 40px; --s-5xl: 48px; --s-6xl: 64px;
+
+  /* Radius — scales with the box */
+  --r-tag: 4px; --r-control: 6px; --r-card: 8px; --r-overlay: 10px; --r-bubble: 12px;
+
+  /* Fixed dimensions */
+  --h-topbar: 48px; --h-panelhead: 44px; --h-navrow: 32px;
+  --h-btn: 28px; --h-btn-sm: 24px; --h-input: 30px; --h-tag: 18px;
+  --w-sidebar: 224px; --w-measure: 640px; --w-trace: 400px;
+  --h-lane: 52px; --w-lane-gutter: 200px; --w-lane-cost: 96px;
+
+  /* Type */
+  --font-sans:  'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:  'IBM Plex Mono', monospace;
+  --font-serif: 'IBM Plex Serif', serif;   /* exactly one use: Ada's greeting */
+
+  /* Motion */
+  --t-hover:  100ms linear;
+  --t-state:  160ms cubic-bezier(.2, 0, 0, 1);
+  --t-arrive: 240ms cubic-bezier(.2, 0, 0, 1);
+  --pulse:    1.8s ease-out infinite;
+
+  /* Elevation — shadow ONLY for things that genuinely float */
+  --shadow-raised:  0 1px 2px rgba(0,0,0,.4);
+  --shadow-overlay: 0 24px 64px -16px rgba(0,0,0,.85), 0 2px 8px rgba(0,0,0,.5);
+  --inset-well:     inset 0 1px 3px rgba(0,0,0,.6);
+
+  /* ── Legacy aliases — bridge the ~2200-line App.tsx onto the new tokens so the
+     migration stays incremental and gold dies in one place. New code uses the
+     tokens above directly; these keep untouched call sites correct. No gold here. */
+  --panel:        var(--surface-1);
+  --panel-2:      var(--surface-2);
+  --line:         var(--border);
+  --line-2:       var(--border-strong);
+  --text:         var(--text-hi);
+  --text-dim:     var(--text-mid);
+  --text-faint:   var(--text-lo);
+  --accent:       var(--text-hi);   /* was gold; now neutral white */
+  --accent-rgb:   237, 237, 237;    /* rgba(var(--accent-rgb),…) → white */
+  --red:          var(--state-error-text);
+  --mono:  var(--font-mono);
+  --sans:  var(--font-sans);
+  --serif: var(--font-serif);
+  --tex-op: 0;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -21,71 +93,69 @@ html, body { min-height: 100%; }
 
 body {
   background: var(--bg);
-  color: var(--text);
-  font-family: var(--sans);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-/* dot-grid texture — toggled by --tex-op */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.4px);
-  background-size: 26px 26px;
-  opacity: var(--tex-op);
-}
-/* ambient accent glow up top */
-body::after {
-  content: "";
-  position: fixed;
-  top: -22%;
-  left: 12%;
-  width: 76%;
-  height: 48%;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse at center, rgba(var(--accent-rgb), 0.05), transparent 70%);
-}
 
-button, input { font-family: inherit; }
-input::placeholder { color: var(--text-faint); }
+/* DELETED ON PURPOSE — do not reinstate:
+   - body::before  (the ambient radial accent glow)
+   - the dot-grid background texture
+   - hover scale on cards, skeleton shimmer, any pulse on an idle element */
 
-/* global scale-up for large displays (everything 50% bigger) */
+button, input, textarea { font-family: inherit; }
+input::placeholder, textarea::placeholder { color: var(--text-lo); }
+
+/* global scale-up for large displays — everything authored at true 1x */
 #root { zoom: 1.5; }
 
+/* Every interactive element must show focus. */
+:focus-visible { outline: 2px solid var(--text-hi); outline-offset: 2px; border-radius: 4px; }
+
+a         { color: var(--text-hi); text-decoration: none; }
+a:hover   { color: #FFFFFF; text-decoration: underline; }
+::selection { background: rgba(255,255,255,.16); }
+
 /* scrollbars */
-*::-webkit-scrollbar { width: 9px; height: 9px; }
-*::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.09); border-radius: 6px; }
-*::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.16); }
-*::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar       { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.09); border-radius: 20px;
+                            border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.18); background-clip: content-box; }
 
 /* interactive helpers (inline styles can't do :hover) */
-.nav-item { transition: background 0.14s, color 0.14s; }
-.nav-item:hover:not(.active) { color: var(--text); background: rgba(255, 255, 255, 0.03); }
-.btn-ghost { transition: color 0.14s, border-color 0.14s; }
-.btn-ghost:hover { color: var(--text); border-color: var(--text-dim); }
-.btn-accent { transition: filter 0.14s; }
+.nav-item { transition: background var(--t-hover), color var(--t-hover); }
+.nav-item:hover:not(.active) { color: var(--text-hi); background: rgba(255, 255, 255, 0.03); }
+.btn-ghost { transition: color var(--t-hover), border-color var(--t-hover); }
+.btn-ghost:hover { color: var(--text-hi); border-color: var(--text-mid); }
+.btn-accent { transition: filter var(--t-hover); }
 .btn-accent:hover { filter: brightness(1.08); }
-.row-hover { transition: background 0.12s; }
-.row-hover:hover { background: rgba(255, 255, 255, 0.02); }
-.swatch { transition: transform 0.14s, box-shadow 0.14s, opacity 0.14s; }
-.swatch:hover { transform: translateY(-1px); opacity: 1; }
+.row-hover { transition: background var(--t-state); }
+.row-hover:hover { background: rgba(255, 255, 255, 0.03); }
 .bare { background: transparent; border: 0; outline: 0; }
 .bare:focus { outline: none; }
 
-/* animations from the mockup */
-@keyframes adaPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.5); } 50% { box-shadow: 0 0 0 6px rgba(var(--accent-rgb), 0); } }
-@keyframes adaBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+/* animations */
+@keyframes adaPulse {
+  0%   { box-shadow: 0 0 0 0   rgba(50,145,255,.45); }
+  70%  { box-shadow: 0 0 0 5px rgba(50,145,255,0);   }
+  100% { box-shadow: 0 0 0 0   rgba(50,145,255,0);   }
+}
+@keyframes adaArrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes adaCaret  { 0%,45% { opacity: 1; } 50%,95% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes adaBlink  { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 @keyframes adaCursor { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-@keyframes adaType { 0%, 80%, 100% { transform: translateY(0); opacity: 0.3; } 40% { transform: translateY(-4px); opacity: 1; } }
-@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.rise { animation: rise 0.25s ease both; }
+@keyframes adaType   { 0%, 80%, 100% { transform: translateY(0); opacity: 0.3; } 40% { transform: translateY(-4px); opacity: 1; } }
+@keyframes rise      { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rise { animation: adaArrive var(--t-arrive) both; }
 
+/* Non-negotiable. No information may be carried by motion alone. */
 @media (prefers-reduced-motion: reduce) {
-  .rise { animation: none; }
-  *[style*="animation"] { animation: none !important; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
 }

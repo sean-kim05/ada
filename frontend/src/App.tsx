@@ -56,8 +56,8 @@ interface FleetRun {
 const panel: CSSProperties = {
   background: "var(--panel)",
   border: "1px solid var(--line)",
-  borderRadius: 13,
-  boxShadow: "inset 0 1px 0 rgba(255,255,255,.03), 0 1px 2px rgba(0,0,0,.45)",
+  borderRadius: "var(--r3)",
+  boxShadow: "var(--hair-top), var(--sh-2)",
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",
@@ -67,7 +67,7 @@ const phead: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  padding: "13px 16px",
+  padding: "var(--s3) var(--s4)",
   borderBottom: "1px solid var(--line)",
   flex: "none",
 };
@@ -270,6 +270,13 @@ const GREETING: ChatMsg = {
   time: "",
 };
 
+const CHAT_SUGGESTIONS = [
+  "What's on my calendar today?",
+  "Add a task to prep the Ada demo",
+  "Summarize my open tasks",
+  "Research the latest local LLM releases",
+];
+
 const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 export default function App() {
@@ -292,21 +299,17 @@ export default function App() {
   const [launchPrompt, setLaunchPrompt] = useState("");
   const [launchDir, setLaunchDir] = useState("");
   const [clock, setClock] = useState(() => Date.now() / 1000);
-  const [accent, setAccent] = useState<string>(() => localStorage.getItem("ada.accent") || "mono");
+  const [accent, setAccent] = useState<string>(() => localStorage.getItem("ada.accent.v2") || "amber");
   const [grid, setGrid] = useState<boolean>(() => localStorage.getItem("ada.grid") !== "0");
   const chatEnd = useRef<HTMLDivElement>(null);
   const traceEnd = useRef<HTMLDivElement>(null);
 
-  // theme: swap the accent (and dot-grid) at the root so every view follows
+  // No accent hue any more — identity comes from the punch-card mark + type.
+  // Keep --accent-rgb defined (white) so any legacy rgba(var(--accent-rgb),…) stays neutral.
   useEffect(() => {
-    const rgb = ACCENTS.find((a) => a.key === accent)?.rgb ?? "250,250,250";
-    document.documentElement.style.setProperty("--accent-rgb", rgb);
-    localStorage.setItem("ada.accent", accent);
-  }, [accent]);
-  useEffect(() => {
-    document.documentElement.style.setProperty("--tex-op", grid ? "1" : "0");
-    localStorage.setItem("ada.grid", grid ? "1" : "0");
-  }, [grid]);
+    document.documentElement.style.setProperty("--accent-rgb", "237,237,237");
+    document.documentElement.style.setProperty("--tex-op", "0");
+  }, []);
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -512,13 +515,36 @@ export default function App() {
               <span style={mono(11, "var(--text-dim)", ".16em")}>CHAT</span>
               <span style={mono(10, "var(--text-faint)", ".08em")}>SESSION · TODAY</span>
             </div>
-            <div style={{ flex: 1, overflowY: "auto", padding: "20px 18px", display: "flex", flexDirection: "column", gap: 18 }}>
-              {msgs.map((m, i) => (
-                <Message key={i} msg={m} />
-              ))}
-              {running && <Working />}
-              <div ref={chatEnd} />
-            </div>
+            {msgs.length <= 1 && !running ? (
+              <div style={{ flex: 1, overflowY: "auto", padding: "var(--s5) var(--s5)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 0 }}>
+                <div style={{ opacity: 0.5, marginBottom: 18 }}><PunchA size={34} /></div>
+                <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-.01em", color: "var(--text)", marginBottom: 8 }}>How can I help, Sean?</div>
+                <div style={{ ...mono(11.5, "var(--text-faint)", ".02em"), maxWidth: 300, textAlign: "center", lineHeight: 1.6, marginBottom: 24 }}>
+                  Your secretary and agent runtime. Ask, and watch the plan run live on the right.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 340 }}>
+                  {CHAT_SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      className="row-hover"
+                      onClick={() => sendText(s)}
+                      style={{ textAlign: "left", background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: "var(--r2)", padding: "11px 13px", cursor: "pointer", color: "var(--text-dim)", fontFamily: "var(--sans)", fontSize: 12.5, display: "flex", alignItems: "center", gap: 10 }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none", opacity: 0.85 }}><path d="M5 12h13M12 5l7 7-7 7" /></svg>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ flex: 1, overflowY: "auto", padding: "var(--s5) 18px", display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 18 }}>
+                {msgs.map((m, i) => (
+                  <Message key={i} msg={m} />
+                ))}
+                {running && <Working />}
+                <div ref={chatEnd} />
+              </div>
+            )}
             <div style={{ flex: "none", padding: "14px 16px", borderTop: "1px solid var(--line)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, background: "var(--panel-2)", border: "1px solid var(--line-2)", borderRadius: 11, padding: "4px 4px 4px 14px" }}>
                 <input
@@ -564,13 +590,24 @@ export default function App() {
               </div>
             </div>
             <div style={{ flex: 1, overflowY: "auto", padding: "18px 16px", display: "flex", flexDirection: "column", gap: 0 }}>
-              <div style={{ ...mono(10, "var(--text-faint)", ".08em"), paddingLeft: 2, marginBottom: 14 }}>
-                {events[0] ? `${events[0].run_id} · plan → act → observe` : "waiting for a run · plan → act → observe"}
-              </div>
-              {events.length === 0 && <div style={{ ...mono(12, "var(--text-faint)"), padding: "8px 2px" }}>Send a message — steps stream here as Ada thinks.</div>}
-              {events.map((e, i) => (
-                <TraceRow key={i} e={e} last={i === events.length - 1} />
-              ))}
+              {events.length === 0 ? (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, textAlign: "center", padding: "24px 20px" }}>
+                  <div style={{ opacity: 0.35 }}><PunchA size={30} /></div>
+                  <div style={mono(12, "var(--text-dim)", ".04em")}>waiting for a run</div>
+                  <div style={{ ...mono(11, "var(--text-faint)", ".02em"), maxWidth: 240, lineHeight: 1.6 }}>
+                    Send a message and Ada's plan streams here — <span style={{ color: "var(--text-dim)" }}>plan → act → observe</span>.
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ ...mono(10, "var(--text-faint)", ".08em"), paddingLeft: 2, marginBottom: 14 }}>
+                    {events[0].run_id} · plan → act → observe
+                  </div>
+                  {events.map((e, i) => (
+                    <TraceRow key={i} e={e} last={i === events.length - 1} />
+                  ))}
+                </>
+              )}
               <div ref={traceEnd} />
             </div>
             <div style={{ flex: "none", borderTop: "1px solid var(--line)", background: "rgba(255,255,255,.015)", padding: "11px 16px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
