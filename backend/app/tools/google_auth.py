@@ -15,8 +15,11 @@ from google.oauth2.credentials import Credentials
 
 from app.config import settings
 
-# Manage calendar events (read + create/move). Gmail scopes get appended here later.
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+# Manage calendar events (read + create/move) and read Gmail (list/read/summarize — never send).
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
 
 
 class NotAuthorized(RuntimeError):

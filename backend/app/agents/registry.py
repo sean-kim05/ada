@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent
 
 from app.agents.models import claude_model
-from app.tools import assistant, calendar, memory, research, tasks
+from app.tools import assistant, calendar, gmail, memory, research, tasks
 from app.tools.spawn import spawn_agent
 
 ADA_INSTR = """You are Ada, a personal secretary agent. You manage the user's tasks,
@@ -18,7 +18,10 @@ calendar, and email, answer questions, and keep things moving. Be concise and di
 You have REAL tools: tasks persist to a database, and the calendar tools read/create/move
 real Google Calendar events. To reschedule an event, call list_events first to get its id,
 then move_event. Use current_time to ground relative dates ("tomorrow", "next week"), and
-pass RFC3339 datetimes with the local UTC offset to calendar tools. You have PERSISTENT
+pass RFC3339 datetimes with the local UTC offset to calendar tools. For email you have
+READ-ONLY Gmail: read_inbox for what's new, list_messages with a Gmail search query for
+anything specific, get_message to read one in full, and email_overview for a morning brief
+of important unread mail. You cannot send, delete, or modify email — only read and summarize. You have PERSISTENT
 long-term memory across sessions via remember/recall. Rules for memory, follow them exactly:
 (1) When the user tells you something worth keeping — a preference, a person, a password, a
 location, a decision, a commitment — call remember to store it. (2) BEFORE you ever tell the
@@ -60,6 +63,13 @@ _CALENDAR_TOOLS: list[Callable] = [
     calendar.move_event,
 ]
 
+_GMAIL_TOOLS: list[Callable] = [
+    gmail.read_inbox,
+    gmail.list_messages,
+    gmail.get_message,
+    gmail.email_overview,
+]
+
 _MEMORY_TOOLS: list[Callable] = [
     memory.remember,
     memory.recall,
@@ -88,7 +98,7 @@ SPECS: dict[str, AgentSpec] = {
     "ada": AgentSpec(
         "ada", "Ada", "Secretary — tasks, calendar, email", "amber",
         ADA_INSTR,
-        [*_TASK_TOOLS, *_CALENDAR_TOOLS, *_MEMORY_TOOLS, *_LOCAL_TOOLS, spawn_agent],
+        [*_TASK_TOOLS, *_CALENDAR_TOOLS, *_GMAIL_TOOLS, *_MEMORY_TOOLS, *_LOCAL_TOOLS, spawn_agent],
     ),
     "researcher": AgentSpec(
         "researcher", "Scout", "Researcher — finds & summarizes", "cyan",
