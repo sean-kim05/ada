@@ -32,5 +32,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
+    # Morning brief scheduler — generates the Gmail brief daily at this local time.
+    brief_hour: int = 7
+    brief_minute: int = 0
+
 
 settings = Settings()

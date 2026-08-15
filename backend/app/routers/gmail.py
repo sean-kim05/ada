@@ -5,12 +5,14 @@ GET /api/gmail/status              -> { authorized: bool }
 GET /api/gmail/messages?q=&max=    -> { authorized, messages[] }  or  { needs_auth: true }
 GET /api/gmail/overview            -> { authorized, unread, important[], brief, messages[] }
 GET /api/gmail/message/{id}        -> { authorized, message }
+GET /api/gmail/brief               -> cached daily brief { generated_at, brief, ... }
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.runtime import brief as brief_store
 from app.tools import gmail
 from app.tools.google_auth import is_authorized
 
@@ -40,6 +42,18 @@ async def overview() -> dict:
     if result.get("error"):
         return {"authorized": True, "error": result["error"], "unread": 0, "important": [], "brief": "", "messages": []}
     return {"authorized": True, **result}
+
+
+@router.get("/brief")
+async def brief() -> dict:
+    """The cached daily brief — instant. If none has been generated yet (and Gmail is
+    connected), generate one on the spot so the panel is never empty."""
+    if not is_authorized():
+        return {"authorized": False, "needs_auth": True, "cached": None}
+    doc = await brief_store.latest()
+    if doc is None:
+        doc = await brief_store.generate_and_store()
+    return {"authorized": True, "cached": doc}
 
 
 @router.get("/message/{message_id}")

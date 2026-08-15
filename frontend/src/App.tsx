@@ -19,6 +19,7 @@ import {
   addCalendarEvent,
   getGmailOverview,
   getGmailMessages,
+  getGmailBrief,
   listMemories,
   searchMemory,
   addMemory,
@@ -1376,24 +1377,37 @@ function InboxView() {
   const [msgs, setMsgs] = useState<GmailMsg[] | null>(null); // the fast list
   const [authorized, setAuthorized] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [brief, setBrief] = useState<string | null>(null); // fills in after the slow summary
+  const [brief, setBrief] = useState<string | null>(null);
+  const [briefAt, setBriefAt] = useState<string | null>(null); // when the cached brief was generated
   const [briefLoading, setBriefLoading] = useState(true);
 
-  const refresh = () => {
-    // Fast path: the unread list renders in ~1s.
+  const loadList = () => {
     setLoading(true);
     getGmailMessages("is:unread in:inbox", 25)
       .then((r) => { setAuthorized(r.authorized); setMsgs(r.messages || []); })
       .catch(() => {})
       .finally(() => setLoading(false));
-    // Slow path: the local-model brief streams in when it's ready, without blocking the list.
+  };
+
+  // On open: show the pre-generated brief instantly (scheduler runs it each morning), plus the list.
+  useEffect(() => {
+    loadList();
     setBriefLoading(true);
-    getGmailOverview()
-      .then((o) => setBrief(o.brief || ""))
+    getGmailBrief()
+      .then((b) => { setBrief(b.cached?.brief ?? ""); setBriefAt(b.cached?.generated_at ?? null); })
       .catch(() => setBrief(""))
       .finally(() => setBriefLoading(false));
+  }, []);
+
+  // Refresh: regenerate the brief live and reload the list.
+  const refresh = () => {
+    loadList();
+    setBriefLoading(true);
+    getGmailOverview()
+      .then((o) => { setBrief(o.brief || ""); setBriefAt(new Date().toISOString()); })
+      .catch(() => {})
+      .finally(() => setBriefLoading(false));
   };
-  useEffect(() => { refresh(); }, []);
 
   const important = (msgs ?? []).filter((m) => m.important);
 
@@ -1431,6 +1445,11 @@ function InboxView() {
         <div style={{ ...panel, padding: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
             <span style={mono(11, "var(--text-dim)", ".1em")}>MORNING BRIEF</span>
+            {briefAt && !briefLoading && (
+              <span style={mono(10, "var(--text-faint)", ".04em")}>
+                · {new Date(briefAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
             <span style={{ flex: 1 }} />
             <span style={mono(10, "var(--text-faint)", ".06em")}>LOCAL MODEL · FREE</span>
           </div>
