@@ -553,11 +553,14 @@ export default function App() {
                 ))}
                 {running && <Working />}
                 {msgs.length <= 1 && !running && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, paddingLeft: 28 }}>
-                    {CHAT_SUGGESTIONS.map((s) => (
-                      <button key={s} onClick={() => sendText(s)} style={{ ...btn("ghost"), height: "auto", padding: "8px 12px", ...text("ui", "var(--text-mid)") }}>{s}</button>
-                    ))}
-                  </div>
+                  <>
+                    <TodayHome tasks={tasks} cal={cal} onOpen={setView} />
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, paddingLeft: 28 }}>
+                      {CHAT_SUGGESTIONS.map((s) => (
+                        <button key={s} onClick={() => sendText(s)} style={{ ...btn("ghost"), height: "auto", padding: "8px 12px", ...text("ui", "var(--text-mid)") }}>{s}</button>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1151,6 +1154,66 @@ function DocsView() {
         </div>
       </div>
     </>
+  );
+}
+
+/* ── Today — at-a-glance dashboard on the chat home (brief + calendar + tasks + mail) ── */
+function TodayHome({ tasks, cal, onOpen }: { tasks: Task[]; cal: CalState; onOpen: (v: ViewKey) => void }) {
+  const [brief, setBrief] = useState<string | null>(null);
+  const [unread, setUnread] = useState<number | null>(null);
+  const [prio, setPrio] = useState<number>(0);
+
+  useEffect(() => {
+    getGmailBrief().then((b) => setBrief(b.cached?.brief ?? "")).catch(() => setBrief(""));
+    getGmailMessages("is:unread in:inbox", 25)
+      .then((r) => { setUnread(r.messages?.length ?? 0); setPrio((r.messages ?? []).filter((m) => m.priority).length); })
+      .catch(() => {});
+  }, []);
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const dateStr = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+
+  // Next upcoming event today.
+  const nowMs = Date.now();
+  const upcoming = (cal.events ?? [])
+    .filter((e) => !e.all_day && new Date(e.start).getTime() >= nowMs)
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  const nextEv = upcoming[0];
+  const openTasks = tasks.filter((t) => !t.done);
+
+  const Stat = ({ label, big, sub, view }: { label: string; big: string; sub?: string; view: ViewKey }) => (
+    <div onClick={() => onOpen(view)} className="row-hover" style={{ flex: 1, minWidth: 0, padding: "12px 14px", cursor: "pointer", borderRight: "1px solid var(--line)" }}>
+      <div style={mono(9.5, "var(--text-faint)", ".12em")}>{label}</div>
+      <div style={{ ...text("title", "var(--text-hi)"), marginTop: 4 }}>{big}</div>
+      {sub && <div style={{ ...text("caption", "var(--text-lo)"), marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ ...panel, padding: 0, marginBottom: 4 }}>
+      <div style={{ padding: "16px 16px 12px" }}>
+        <div style={text("heading", "var(--text-hi)")}>{greeting}.</div>
+        <div style={{ ...mono(10.5, "var(--text-faint)", ".1em"), marginTop: 3 }}>{dateStr.toUpperCase()}</div>
+        {brief && (
+          <div
+            onClick={() => onOpen("inbox")}
+            style={{ ...text("body", "var(--text-mid)"), marginTop: 12, cursor: "pointer", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+          >
+            {renderInlineBold(brief)}
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", borderTop: "1px solid var(--line)" }}>
+        <Stat label="INBOX" big={unread === null ? "—" : `${unread}`} sub={prio > 0 ? `${prio} priority` : "unread"} view="inbox" />
+        <Stat label="NEXT UP" big={nextEv ? fmtEventTime(nextEv.start, false) : (upcoming.length === 0 ? "clear" : "—")} sub={nextEv ? nextEv.title : "no more events"} view="calendar" />
+        <div onClick={() => onOpen("tasks")} className="row-hover" style={{ flex: 1, minWidth: 0, padding: "12px 14px", cursor: "pointer" }}>
+          <div style={mono(9.5, "var(--text-faint)", ".12em")}>TASKS</div>
+          <div style={{ ...text("title", "var(--text-hi)"), marginTop: 4 }}>{openTasks.length}</div>
+          <div style={{ ...text("caption", "var(--text-lo)"), marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{openTasks[0]?.title ?? "open"}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
