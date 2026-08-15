@@ -16,6 +16,9 @@ import {
   addTask,
   setTaskDone,
   getCalendar,
+  addCalendarEvent,
+  getGmailOverview,
+  getGmailMessages,
   listMemories,
   searchMemory,
   addMemory,
@@ -24,6 +27,8 @@ import {
   getRouterHealth,
   type Task,
   type CalState,
+  type GmailOverview,
+  type GmailMsg,
   type Memory,
   type RouterStats,
   type RouterHealth,
@@ -138,6 +143,12 @@ const ICONS: Record<string, JSX.Element> = {
     <>
       <path d="M6 3h9l4 4v14H6z" />
       <path d="M14 3v5h5M9 13h7M9 17h5" />
+    </>
+  ),
+  Inbox: (
+    <>
+      <path d="M3 5h18v14H3z" />
+      <path d="M3 13h5l2 3h4l2-3h5" />
     </>
   ),
   Arena: (
@@ -260,7 +271,7 @@ function PunchA({ size = 22, color = "var(--accent)" }: { size?: number; color?:
   );
 }
 
-type ViewKey = "deck" | "fleet" | "arena" | "mission" | "docs" | "router";
+type ViewKey = "deck" | "fleet" | "arena" | "mission" | "docs" | "router" | "inbox" | "calendar" | "tasks";
 type NavItem = { name: string; view: ViewKey; icon: string };
 const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
@@ -276,8 +287,9 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: "Secretary",
     items: [
-      { name: "Calendar", view: "deck", icon: "Calendar" },
-      { name: "Tasks", view: "deck", icon: "Tasks" },
+      { name: "Inbox", view: "inbox", icon: "Inbox" },
+      { name: "Calendar", view: "calendar", icon: "Calendar" },
+      { name: "Tasks", view: "tasks", icon: "Tasks" },
       { name: "Docs", view: "docs", icon: "Docs" },
     ],
   },
@@ -318,7 +330,7 @@ export default function App() {
   const [routerStats, setRouterStats] = useState<RouterStats | null>(null);
   const refreshTasks = () => listTasks().then(setTasks).catch(() => {});
   const refreshCal = () => getCalendar().then(setCal).catch(() => {});
-  const [view, setView] = useState<"deck" | "fleet" | "arena" | "mission" | "docs" | "router">("deck");
+  const [view, setView] = useState<ViewKey>("deck");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [fleet, setFleet] = useState<Record<string, FleetRun>>({});
   const [agentTypes, setAgentTypes] = useState<AgentType[]>([]);
@@ -436,13 +448,13 @@ export default function App() {
     name === "Fleet" ? runningCount || null : name === "Tasks" ? openTasks || null : name === "Calendar" ? cal.events.length || null : null;
 
   return (
-    <div style={{ position: "relative", zIndex: 1, display: "grid", gridTemplateColumns: "var(--w-sidebar) minmax(0,1fr)", minHeight: "calc(100vh / 1.5)" }}>
+    <div style={{ position: "relative", zIndex: 1, display: "grid", gridTemplateColumns: "var(--w-sidebar) minmax(0,1fr)", minHeight: "calc(100vh / 1.35)" }}>
       {/* ═══ SIDEBAR ═══ */}
       <aside
         style={{
           position: "sticky",
           top: 0,
-          height: "calc(100vh / 1.5)",
+          height: "calc(100vh / 1.35)",
           width: "var(--w-sidebar)",
           borderRight: "1px solid var(--border)",
           background: "var(--surface-1)",
@@ -528,7 +540,7 @@ export default function App() {
         </header>
 
         {/* home: conversation | rule | trace — no panels, no nested boxes */}
-        <section style={{ display: "flex", height: "calc(100vh / 1.5 - var(--h-topbar))", minHeight: 520 }}>
+        <section style={{ display: "flex", height: "calc(100vh / 1.35 - var(--h-topbar))", minHeight: 520 }}>
           {/* CONVERSATION */}
           <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <div ref={chatScroll} style={scroller}>
@@ -660,6 +672,12 @@ export default function App() {
           <ArenaView agentTypes={agentTypes} />
         ) : view === "docs" ? (
           <DocsView />
+        ) : view === "inbox" ? (
+          <InboxView />
+        ) : view === "calendar" ? (
+          <CalendarView />
+        ) : view === "tasks" ? (
+          <TasksView />
         ) : view === "router" ? (
           <RouterView />
         ) : (
@@ -1102,7 +1120,7 @@ function DocsView() {
         </div>
 
         {/* list */}
-        <div style={{ maxHeight: "calc(100vh / 1.5 - 320px)", minHeight: 200, overflowY: "auto" }}>
+        <div style={{ maxHeight: "calc(100vh / 1.35 - 320px)", minHeight: 200, overflowY: "auto" }}>
           {shown.length === 0 && (
             <div style={{ padding: 22, fontSize: 12.5, color: "var(--text-faint)" }}>{hits !== null ? "No matches." : "Nothing stored yet. Tell Ada something to remember, or add a memory below."}</div>
           )}
@@ -1127,6 +1145,320 @@ function DocsView() {
           <span style={{ width: 17, height: 17, flex: "none", borderRadius: 5, border: "1px dashed var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)", fontSize: 14, lineHeight: 1 }}>+</span>
           <input className="bare" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Add a memory…" style={{ flex: 1, color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13, padding: "4px 0" }} />
           <button className="btn-ghost" onClick={add} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: "pointer" }}>SAVE</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ── Calendar — real Google Calendar day view ── */
+function fmtEventTime(iso: string, allDay: boolean) {
+  if (allDay) return "All day";
+  const m = iso.match(/T(\d{2}):(\d{2})/);
+  if (!m) return "";
+  let h = parseInt(m[1], 10);
+  const ap = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${h}:${m[2]} ${ap}`;
+}
+
+function rfc3339At(time: string, addMin: number): string {
+  // time is "HH:MM" today (local). Returns RFC3339 with the local UTC offset.
+  const [h, m] = time.split(":").map((n) => parseInt(n, 10));
+  const d = new Date();
+  d.setHours(h || 0, (m || 0) + addMin, 0, 0);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const tz = -d.getTimezoneOffset();
+  const sign = tz >= 0 ? "+" : "-";
+  const off = Math.abs(tz);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${sign}${pad(Math.floor(off / 60))}:${pad(off % 60)}`;
+}
+
+function CalendarView() {
+  const [cal, setCal] = useState<CalState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [evTitle, setEvTitle] = useState("");
+  const [evTime, setEvTime] = useState("12:00");
+  const [evDur, setEvDur] = useState(60);
+  const [saving, setSaving] = useState(false);
+  const refresh = () => {
+    setLoading(true);
+    getCalendar().then(setCal).catch(() => {}).finally(() => setLoading(false));
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const submit = async () => {
+    const t = evTitle.trim();
+    if (!t) return;
+    setSaving(true);
+    const start = rfc3339At(evTime, 0);
+    const end = rfc3339At(evTime, evDur);
+    const r = await addCalendarEvent(t, start, end).catch(() => null);
+    setSaving(false);
+    if (r && !r.error) {
+      setEvTitle(""); setAdding(false);
+      refresh();
+    }
+  };
+
+  const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const events = cal?.events ?? [];
+
+  return (
+    <>
+      <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span style={mono(12, "var(--text)", ".14em")}>CALENDAR</span>
+          <span style={mono(11, "var(--text-faint)", ".1em")}>{today.toUpperCase()}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <HeaderPill text={`${events.length} EVENTS`} accent />
+          <button className="btn-ghost" onClick={refresh} disabled={loading} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: loading ? "default" : "pointer", opacity: loading ? 0.5 : 1 }}>
+            {loading ? "…" : "REFRESH"}
+          </button>
+        </div>
+      </header>
+
+      {cal && !cal.authorized ? (
+        <div style={{ ...panel, padding: 28, maxWidth: 520, display: "flex", flexDirection: "column", gap: 8 }}>
+          <span style={text("title")}>Connect your Google Calendar</span>
+          <span style={text("caption", "var(--text-mid)")}>Ada isn't linked to your Google account yet.</span>
+        </div>
+      ) : (
+        <div style={{ ...panel, padding: 0, maxWidth: 640, width: "100%" }}>
+          {events.length === 0 && !loading && (
+            <div style={{ padding: 22, ...text("caption", "var(--text-faint)") }}>Nothing on your calendar today.</div>
+          )}
+          {loading && !cal && <div style={{ padding: 22, ...text("caption", "var(--text-faint)") }}>Reading your calendar…</div>}
+          {events.map((e) => (
+            <div key={e.id} className="row-hover" style={{ display: "flex", gap: 14, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+              <div style={{ width: 74, flex: "none", ...mono(11, "var(--text-mid)"), paddingTop: 1 }}>{fmtEventTime(e.start, e.all_day)}</div>
+              <div style={{ width: 2, flex: "none", borderRadius: 2, background: "var(--state-running)" }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ ...text("ui", "var(--text-hi)"), overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</div>
+                <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
+                  {e.location && <span style={{ ...text("caption", "var(--text-lo)"), overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.location}</span>}
+                  {e.attendees.length > 0 && <span style={mono(10, "var(--text-faint)")}>{e.attendees.length} guest{e.attendees.length > 1 ? "s" : ""}</span>}
+                </div>
+              </div>
+            </div>
+          ))}
+          {adding ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px 10px 16px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
+              <input className="bare" autoFocus value={evTitle} onChange={(e) => setEvTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="Event title…" style={{ flex: "1 1 180px", color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13, padding: "4px 0" }} />
+              <input type="time" value={evTime} onChange={(e) => setEvTime(e.target.value)} style={{ ...mono(11, "var(--text)"), background: "var(--surface-2)", border: "1px solid var(--line-2)", borderRadius: 6, padding: "4px 8px", flex: "none" }} />
+              <select value={evDur} onChange={(e) => setEvDur(parseInt(e.target.value, 10))} style={{ ...mono(11, "var(--text)"), background: "var(--surface-2)", border: "1px solid var(--line-2)", borderRadius: 6, padding: "4px 8px", flex: "none" }}>
+                <option value={30}>30m</option>
+                <option value={60}>1h</option>
+                <option value={90}>1.5h</option>
+                <option value={120}>2h</option>
+              </select>
+              <button className="btn-ghost" onClick={submit} disabled={saving} style={{ ...mono(10, "#0c0e11", ".06em"), fontWeight: 600, background: "var(--accent)", border: 0, borderRadius: 6, padding: "6px 11px", cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1, flex: "none" }}>{saving ? "…" : "ADD"}</button>
+              <button className="btn-ghost" onClick={() => { setAdding(false); setEvTitle(""); }} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "6px 9px", cursor: "pointer", flex: "none" }}>✕</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: "1px solid var(--line)" }}>
+              <button className="btn-ghost" onClick={() => setAdding(true)} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: "pointer" }}>+ ADD EVENT</button>
+              <span style={text("caption", "var(--text-lo)")}>or ask Ada — “move my 3pm to 4.”</span>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── Tasks — real Postgres-backed to-dos ── */
+function TasksView() {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [draft, setDraft] = useState("");
+  const refresh = () => listTasks().then(setTasks).catch(() => {});
+  useEffect(() => { refresh(); }, []);
+  const add = async () => {
+    const t = draft.trim();
+    if (!t) return;
+    setDraft("");
+    await addTask(t).catch(() => {});
+    refresh();
+  };
+  const toggle = async (id: string, done: boolean) => {
+    await setTaskDone(id, done).catch(() => {});
+    refresh();
+  };
+  const open = tasks.filter((t) => !t.done);
+  const done = tasks.filter((t) => t.done);
+
+  return (
+    <>
+      <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span style={mono(12, "var(--text)", ".14em")}>TASKS</span>
+          <span style={mono(11, "var(--text-faint)", ".1em")}>POSTGRES · SHARED WITH CHAT</span>
+        </div>
+        <HeaderPill text={`${open.length} OPEN`} accent />
+      </header>
+
+      <div style={{ ...panel, padding: 0, maxWidth: 640, width: "100%" }}>
+        {/* add */}
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "10px 12px 10px 16px", borderBottom: "1px solid var(--line)" }}>
+          <span style={{ width: 17, height: 17, flex: "none", borderRadius: 5, border: "1px dashed var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)", fontSize: 14, lineHeight: 1 }}>+</span>
+          <input className="bare" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Add a task…" style={{ flex: 1, color: "var(--text)", fontFamily: "var(--sans)", fontSize: 13, padding: "4px 0" }} />
+          <button className="btn-ghost" onClick={add} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: "pointer" }}>ADD</button>
+        </div>
+        {tasks.length === 0 && <div style={{ padding: 22, ...text("caption", "var(--text-faint)") }}>No tasks yet. Add one above, or ask Ada in chat.</div>}
+        {[...open, ...done].map((t) => (
+          <div key={t.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line)" }}>
+            <button onClick={() => toggle(t.id, !t.done)} title={t.done ? "Reopen" : "Complete"} style={{ width: 17, height: 17, flex: "none", borderRadius: 5, cursor: "pointer", border: `1px solid ${t.done ? "var(--state-ok)" : "var(--line-2)"}`, background: t.done ? "var(--state-ok)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#0c0e11", fontSize: 12, lineHeight: 1 }}>{t.done ? "✓" : ""}</button>
+            <span style={{ flex: 1, ...text("ui", t.done ? "var(--text-lo)" : "var(--text-hi)"), textDecoration: t.done ? "line-through" : "none" }}>{t.title}</span>
+            {t.due && <span style={mono(10, "var(--text-faint)")}>{t.due.slice(0, 10)}</span>}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ── Inbox — real Gmail (read-only): morning brief + what needs attention ── */
+function fromInitial(name: string) {
+  const c = (name || "?").trim()[0] || "?";
+  return c.toUpperCase();
+}
+function shortDate(rfc: string) {
+  // Gmail Date headers are RFC2822 ("Fri, 14 Aug 2026 17:54:19 +0000"). Show "14 Aug".
+  const m = rfc.match(/(\d{1,2})\s+([A-Za-z]{3})/);
+  return m ? `${m[1]} ${m[2]}` : rfc.slice(0, 11);
+}
+
+function MailRow({ m }: { m: GmailMsg }) {
+  return (
+    <div className="row-hover" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+      <span
+        title={m.from_email}
+        style={{
+          width: 26, height: 26, flex: "none", borderRadius: "50%",
+          display: "flex", alignItems: "center", justifyContent: "center", marginTop: 1,
+          background: "var(--surface-2)", border: "1px solid var(--line-2)",
+          ...mono(11, m.unread ? "var(--text)" : "var(--text-dim)"),
+        }}
+      >
+        {fromInitial(m.from_name)}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {m.unread && <span style={{ width: 6, height: 6, flex: "none", borderRadius: "50%", background: "var(--state-running)" }} />}
+          <span style={{ ...text("ui", m.unread ? "var(--text-hi)" : "var(--text-mid)"), fontWeight: m.unread ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "0 1 auto", minWidth: 0 }}>
+            {m.from_name}
+          </span>
+          {m.important && <span style={{ ...mono(9, "#7FBBFF", ".06em"), border: "1px solid rgba(50,145,255,.28)", borderRadius: 4, padding: "1px 4px", flex: "none" }}>IMPORTANT</span>}
+          <span style={{ flex: 1 }} />
+          <span style={{ ...mono(10, "var(--text-faint)"), flex: "none" }}>{shortDate(m.date)}</span>
+        </div>
+        <div style={{ ...text("caption", m.unread ? "var(--text-hi)" : "var(--text-mid)"), marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {m.subject}
+        </div>
+        <div style={{ ...text("caption", "var(--text-lo)"), marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {m.snippet}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Render **bold** markdown inline (the local summary model emits it); keep everything else plain.
+function renderInlineBold(s: string) {
+  return s.split("**").map((part, i) =>
+    i % 2 === 1 ? <strong key={i} style={{ fontWeight: 600, color: "var(--text-hi)" }}>{part}</strong> : <span key={i}>{part}</span>
+  );
+}
+
+function InboxView() {
+  const [msgs, setMsgs] = useState<GmailMsg[] | null>(null); // the fast list
+  const [authorized, setAuthorized] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [brief, setBrief] = useState<string | null>(null); // fills in after the slow summary
+  const [briefLoading, setBriefLoading] = useState(true);
+
+  const refresh = () => {
+    // Fast path: the unread list renders in ~1s.
+    setLoading(true);
+    getGmailMessages("is:unread in:inbox", 25)
+      .then((r) => { setAuthorized(r.authorized); setMsgs(r.messages || []); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+    // Slow path: the local-model brief streams in when it's ready, without blocking the list.
+    setBriefLoading(true);
+    getGmailOverview()
+      .then((o) => setBrief(o.brief || ""))
+      .catch(() => setBrief(""))
+      .finally(() => setBriefLoading(false));
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const important = (msgs ?? []).filter((m) => m.important);
+
+  if (msgs && !authorized) {
+    return (
+      <>
+        <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center" }}>
+          <span style={mono(12, "var(--text)", ".14em")}>INBOX · GMAIL</span>
+        </header>
+        <div style={{ ...panel, padding: 28, maxWidth: 520, display: "flex", flexDirection: "column", gap: 8 }}>
+          <span style={text("title")}>Connect your Gmail</span>
+          <span style={text("caption", "var(--text-mid)")}>Ada isn't linked to your Google account yet. Once connected, your morning brief and inbox show up here.</span>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <header style={{ height: 40, flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span style={mono(12, "var(--text)", ".14em")}>INBOX · GMAIL</span>
+          <span style={mono(11, "var(--text-faint)", ".1em")}>READ-ONLY · MORNING BRIEF</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {msgs && <HeaderPill text={`${msgs.length} UNREAD`} accent />}
+          <button className="btn-ghost" onClick={refresh} disabled={loading} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: loading ? "default" : "pointer", opacity: loading ? 0.5 : 1 }}>
+            {loading ? "…" : "REFRESH"}
+          </button>
+        </div>
+      </header>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, width: "100%" }}>
+        {/* morning brief */}
+        <div style={{ ...panel, padding: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+            <span style={mono(11, "var(--text-dim)", ".1em")}>MORNING BRIEF</span>
+            <span style={{ flex: 1 }} />
+            <span style={mono(10, "var(--text-faint)", ".06em")}>LOCAL MODEL · FREE</span>
+          </div>
+          <div style={{ padding: "16px 18px", ...text("body", briefLoading ? "var(--text-lo)" : "var(--text-hi)"), whiteSpace: "pre-wrap" }}>
+            {briefLoading ? "Summarizing your inbox on the local model…" : (brief ? renderInlineBold(brief) : "Inbox zero — nothing to brief.")}
+          </div>
+        </div>
+
+        {/* needs attention */}
+        {important.length > 0 && (
+          <div style={{ ...panel, padding: 0 }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+              <span style={mono(11, "var(--text-dim)", ".1em")}>NEEDS ATTENTION · {important.length}</span>
+            </div>
+            {important.map((m) => <MailRow key={m.id} m={m} />)}
+          </div>
+        )}
+
+        {/* unread inbox */}
+        <div style={{ ...panel, padding: 0 }}>
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+            <span style={mono(11, "var(--text-dim)", ".1em")}>UNREAD</span>
+          </div>
+          {loading && !msgs && <div style={{ padding: 22, ...text("caption", "var(--text-faint)") }}>Reading your inbox…</div>}
+          {msgs && msgs.length === 0 && !loading && (
+            <div style={{ padding: 22, ...text("caption", "var(--text-faint)") }}>Nothing unread. Inbox zero.</div>
+          )}
+          {msgs?.map((m) => <MailRow key={m.id} m={m} />)}
         </div>
       </div>
     </>
@@ -1200,7 +1532,7 @@ function RouterView() {
             <span style={mono(11, "var(--text-dim)", ".1em")}>RECENT ROUTED CALLS</span>
             <HeaderPill text={`${total} TOTAL`} />
           </div>
-          <div style={{ maxHeight: "calc(100vh / 1.5 - 430px)", minHeight: 140, overflowY: "auto" }}>
+          <div style={{ maxHeight: "calc(100vh / 1.35 - 430px)", minHeight: 140, overflowY: "auto" }}>
             {(!stats || stats.recent.length === 0) && (
               <div style={{ padding: 22, fontSize: 12.5, color: "var(--text-faint)" }}>
                 Nothing routed yet. Ask Ada to summarize a note or triage some text — cheap work goes to the local model and shows up here.
@@ -1491,7 +1823,7 @@ function FleetView(p: FleetProps) {
   };
 
   return (
-    <section style={{ display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
+    <section style={{ display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, height: "calc(100vh / 1.35 - 74px)", minHeight: 560 }}>
       <div style={panel}>
         <div style={phead}>
           <span style={text("ui")}>Fleet</span>
@@ -1985,7 +2317,7 @@ function ArenaView({ agentTypes }: { agentTypes: AgentType[] }) {
   ];
 
   return (
-    <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
+    <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.35 - 74px)", minHeight: 560 }}>
       <div style={{ ...panel, flex: 1 }}>
         <div style={phead}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2211,7 +2543,7 @@ function MissionView({ agentTypes }: { agentTypes: AgentType[] }) {
   ];
 
   return (
-    <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.5 - 74px)", minHeight: 560 }}>
+    <section style={{ display: "flex", flexDirection: "column", height: "calc(100vh / 1.35 - 74px)", minHeight: 560 }}>
       <div style={{ ...panel, flex: 1 }}>
         {/* header — mission id, objective, four figures */}
         <div style={{ ...phead, height: "auto", flexDirection: "column", alignItems: "stretch", gap: 8, padding: "14px 16px" }}>

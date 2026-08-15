@@ -1,4 +1,4 @@
-/* Ada design tokens — TRUE 1x scale. #root { zoom: 1.5 } stays as a global multiplier.
+/* Ada design tokens — TRUE 1x scale. #root { zoom: 1.35 } stays as a global multiplier.
    There is no gold/brass accent. The primary action is a white fill. */
 
 :root {
@@ -50,7 +50,7 @@
   /* Fixed dimensions */
   --h-topbar: 48px; --h-panelhead: 44px; --h-navrow: 32px;
   --h-btn: 28px; --h-btn-sm: 24px; --h-input: 30px; --h-tag: 18px;
-  --w-sidebar: 224px; --w-measure: 640px; --w-trace: 400px;
+  --w-sidebar: 224px; --w-measure: 520px; --w-trace: 400px;
   --h-lane: 52px; --w-lane-gutter: 200px; --w-lane-cost: 96px;
 
   /* Type */
@@ -109,7 +109,7 @@ button, input, textarea { font-family: inherit; }
 input::placeholder, textarea::placeholder { color: var(--text-lo); }
 
 /* global scale-up for large displays — everything authored at true 1x */
-#root { zoom: 1.5; }
+#root { zoom: 1.35; }
 
 /* Every interactive element must show focus. */
 :focus-visible { outline: 2px solid var(--text-hi); outline-offset: 2px; border-radius: 4px; }

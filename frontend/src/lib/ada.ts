@@ -229,6 +229,52 @@ export async function getCalendar(day?: string): Promise<CalState> {
   return r.json();
 }
 
+// Create a calendar event. start/end are RFC3339 with offset.
+export async function addCalendarEvent(title: string, start: string, end: string, attendees?: string[]): Promise<{ authorized: boolean; error?: string; event: CalEvent | null }> {
+  const r = await fetch(`${API}/api/calendar/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, start, end, attendees: attendees ?? null }),
+  });
+  return r.json();
+}
+
+// ── Gmail (real Gmail, read-only) ─────────────────────────
+export interface GmailMsg {
+  id: string;
+  thread_id: string;
+  from_name: string;
+  from_email: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  unread: boolean;
+  important: boolean;
+  starred: boolean;
+  body?: string; // present only on a single-message fetch
+}
+export interface GmailOverview {
+  authorized: boolean;
+  needs_auth?: boolean;
+  error?: string;
+  unread: number;
+  important: GmailMsg[];
+  brief: string;
+  messages: GmailMsg[];
+}
+
+// The morning brief: unread count, important threads, and a local-model summary of the inbox.
+export async function getGmailOverview(): Promise<GmailOverview> {
+  const r = await fetch(`${API}/api/gmail/overview`);
+  return r.json();
+}
+
+// A raw message list for a Gmail search query (default the inbox).
+export async function getGmailMessages(q = "in:inbox", max = 20): Promise<{ authorized: boolean; needs_auth?: boolean; error?: string; messages: GmailMsg[] }> {
+  const r = await fetch(`${API}/api/gmail/messages?q=${encodeURIComponent(q)}&max=${max}`);
+  return r.json();
+}
+
 // ── Long-term memory (Qdrant / RAG) ───────────────────────
 export interface Memory {
   id: string;
