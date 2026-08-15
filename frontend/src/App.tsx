@@ -20,6 +20,8 @@ import {
   getGmailOverview,
   getGmailMessages,
   getGmailBrief,
+  getGmailRules,
+  setGmailRules,
   listMemories,
   searchMemory,
   addMemory,
@@ -1351,7 +1353,8 @@ function MailRow({ m }: { m: GmailMsg }) {
           <span style={{ ...text("ui", m.unread ? "var(--text-hi)" : "var(--text-mid)"), fontWeight: m.unread ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "0 1 auto", minWidth: 0 }}>
             {m.from_name}
           </span>
-          {m.important && <span style={{ ...mono(9, "#7FBBFF", ".06em"), border: "1px solid rgba(50,145,255,.28)", borderRadius: 4, padding: "1px 4px", flex: "none" }}>IMPORTANT</span>}
+          {m.priority && <span style={{ ...mono(9, "var(--text-hi)", ".06em"), fontWeight: 600, background: "var(--text-hi)", color: "#0c0e11", borderRadius: 4, padding: "1px 5px", flex: "none" }}>PRIORITY</span>}
+          {m.important && !m.priority && <span style={{ ...mono(9, "#7FBBFF", ".06em"), border: "1px solid rgba(50,145,255,.28)", borderRadius: 4, padding: "1px 4px", flex: "none" }}>IMPORTANT</span>}
           <span style={{ flex: 1 }} />
           <span style={{ ...mono(10, "var(--text-faint)"), flex: "none" }}>{shortDate(m.date)}</span>
         </div>
@@ -1380,6 +1383,23 @@ function InboxView() {
   const [brief, setBrief] = useState<string | null>(null);
   const [briefAt, setBriefAt] = useState<string | null>(null); // when the cached brief was generated
   const [briefLoading, setBriefLoading] = useState(true);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [senders, setSenders] = useState("");   // comma-separated, edited as text
+  const [keywords, setKeywords] = useState("");
+  const [savingRules, setSavingRules] = useState(false);
+
+  useEffect(() => {
+    getGmailRules().then((r) => { setSenders(r.senders.join(", ")); setKeywords(r.keywords.join(", ")); }).catch(() => {});
+  }, []);
+
+  const parseList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+  const saveRules = async () => {
+    setSavingRules(true);
+    await setGmailRules(parseList(senders), parseList(keywords)).catch(() => {});
+    setSavingRules(false);
+    setRulesOpen(false);
+    loadList(); // re-tag messages with the new rules
+  };
 
   const loadList = () => {
     setLoading(true);
@@ -1434,6 +1454,9 @@ function InboxView() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {msgs && <HeaderPill text={`${msgs.length} UNREAD`} accent />}
+          <button className="btn-ghost" onClick={() => setRulesOpen((o) => !o)} style={{ ...mono(10, rulesOpen ? "var(--text-hi)" : "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: "pointer" }}>
+            PRIORITY RULES
+          </button>
           <button className="btn-ghost" onClick={refresh} disabled={loading} style={{ ...mono(10, "var(--text-dim)", ".06em"), background: "transparent", border: "1px solid var(--line-2)", borderRadius: 6, padding: "5px 10px", cursor: loading ? "default" : "pointer", opacity: loading ? 0.5 : 1 }}>
             {loading ? "…" : "REFRESH"}
           </button>
@@ -1441,6 +1464,29 @@ function InboxView() {
       </header>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, width: "100%" }}>
+        {/* priority rules editor */}
+        {rulesOpen && (
+          <div style={{ ...panel, padding: 0 }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+              <span style={mono(11, "var(--text-dim)", ".1em")}>PRIORITY RULES</span>
+            </div>
+            <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <span style={text("caption", "var(--text-mid)")}>VIP senders — emails or domains, comma-separated</span>
+                <input className="bare" value={senders} onChange={(e) => setSenders(e.target.value)} placeholder="jane@work.com, @spacex.com, recruiter" style={{ ...inputStyle("default"), width: "100%" }} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <span style={text("caption", "var(--text-mid)")}>Keywords — matched in subject or preview, comma-separated</span>
+                <input className="bare" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="interview, offer, deadline, oncall" style={{ ...inputStyle("default"), width: "100%" }} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <button onClick={saveRules} disabled={savingRules} style={{ ...btn("primary", true), cursor: savingRules ? "default" : "pointer", opacity: savingRules ? 0.6 : 1 }}>{savingRules ? "Saving…" : "Save rules"}</button>
+                <span style={text("caption", "var(--text-lo)")}>Matching mail is force-flagged PRIORITY and leads the brief.</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* morning brief */}
         <div style={{ ...panel, padding: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>

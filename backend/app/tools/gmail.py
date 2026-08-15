@@ -17,6 +17,7 @@ from email.utils import parseaddr
 from googleapiclient.discovery import build
 
 from app.agents import router
+from app.tools import priority
 from app.tools.google_auth import NotAuthorized, load_credentials
 
 
@@ -76,11 +77,20 @@ async def _guarded(fn, *args):
         return {"error": f"gmail error: {e}"}
 
 
+async def _tag_priority(msgs: list[dict]) -> list[dict]:
+    """Annotate each message with `priority` per the user's VIP-sender/keyword rules."""
+    rules = await priority.get_rules()
+    for m in msgs:
+        m["priority"] = priority.matches(m, rules)
+    return msgs
+
+
 async def list_messages(query: str = "in:inbox", max_results: int = 12) -> list[dict] | dict:
     """List inbox messages matching a Gmail search `query` (default the inbox). Useful queries:
     "is:unread", "is:important is:unread", "from:someone@x.com", "newer_than:1d". Returns each
-    message's sender, subject, date, snippet, and unread/important flags."""
-    return await _guarded(_list_sync, query, max_results)
+    message's sender, subject, date, snippet, and unread/important/priority flags."""
+    result = await _guarded(_list_sync, query, max_results)
+    return await _tag_priority(result) if isinstance(result, list) else result
 
 
 def _decode_body(payload: dict) -> str:
@@ -118,7 +128,8 @@ async def get_message(message_id: str) -> dict:
 async def read_inbox(max_results: int = 10) -> list[dict] | dict:
     """Read the user's most recent unread inbox messages (sender/subject/snippet). Use this
     when the user asks what's in their inbox or what's new."""
-    return await _guarded(_list_sync, "is:unread in:inbox", max_results)
+    result = await _guarded(_list_sync, "is:unread in:inbox", max_results)
+    return await _tag_priority(result) if isinstance(result, list) else result
 
 
 async def email_overview() -> dict:
@@ -128,19 +139,29 @@ async def email_overview() -> dict:
     msgs = await _guarded(_list_sync, "is:unread in:inbox", 20)
     if isinstance(msgs, dict):  # error / needs_auth
         return msgs
-    important = [m for m in msgs if m["important"]]
     if not msgs:
         return {"unread": 0, "important": [], "brief": "Inbox zero — no unread mail.", "messages": []}
+    await _tag_priority(msgs)
+
+    # Needs Attention: the user's priority matches first, then Gmail-flagged important.
+    important = [m for m in msgs if m["priority"]] + [m for m in msgs if m["important"] and not m["priority"]]
 
     lines = [
         f"- From {m['from_name']} — {m['subject']}: {m['snippet'][:160]}"
         for m in msgs[:15]
     ]
+    prio_lines = [f"- From {m['from_name']} — {m['subject']}" for m in msgs if m["priority"]]
+    prio_block = (
+        "The user marked these senders/topics as HIGH PRIORITY — lead the brief with them:\n"
+        + "\n".join(prio_lines) + "\n\n"
+        if prio_lines else ""
+    )
     prompt = (
         "Here are the user's unread emails. Write a tight morning brief (3-5 sentences): lead "
         "with anything that looks urgent or needs a reply, group the rest, and skip pure "
         "newsletters/promotions unless notable. Be specific with names and subjects. Write in "
         "plain prose only — NO markdown, no asterisks, no bold, no headings, no bullet symbols.\n\n"
+        + prio_block
         + "\n".join(lines)
     )
     try:

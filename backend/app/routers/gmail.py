@@ -11,12 +11,18 @@ GET /api/gmail/brief               -> cached daily brief { generated_at, brief, 
 from __future__ import annotations
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from app.runtime import brief as brief_store
-from app.tools import gmail
+from app.tools import gmail, priority
 from app.tools.google_auth import is_authorized
 
 router = APIRouter(prefix="/api/gmail")
+
+
+class Rules(BaseModel):
+    senders: list[str] = []
+    keywords: list[str] = []
 
 
 @router.get("/status")
@@ -42,6 +48,16 @@ async def overview() -> dict:
     if result.get("error"):
         return {"authorized": True, "error": result["error"], "unread": 0, "important": [], "brief": "", "messages": []}
     return {"authorized": True, **result}
+
+
+@router.get("/rules")
+async def get_rules() -> dict:
+    return await priority.get_rules()
+
+
+@router.put("/rules")
+async def put_rules(rules: Rules) -> dict:
+    return await priority.set_rules(rules.senders, rules.keywords)
 
 
 @router.get("/brief")

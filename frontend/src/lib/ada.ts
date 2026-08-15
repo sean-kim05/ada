@@ -251,7 +251,25 @@ export interface GmailMsg {
   unread: boolean;
   important: boolean;
   starred: boolean;
+  priority?: boolean; // matched the user's VIP-sender/keyword rules
   body?: string; // present only on a single-message fetch
+}
+
+export interface PriorityRules {
+  senders: string[];
+  keywords: string[];
+}
+export async function getGmailRules(): Promise<PriorityRules> {
+  const r = await fetch(`${API}/api/gmail/rules`);
+  return r.json();
+}
+export async function setGmailRules(senders: string[], keywords: string[]): Promise<PriorityRules> {
+  const r = await fetch(`${API}/api/gmail/rules`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ senders, keywords }),
+  });
+  return r.json();
 }
 export interface GmailOverview {
   authorized: boolean;
