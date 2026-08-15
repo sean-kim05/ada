@@ -53,10 +53,20 @@ start_frontend() {
   echo "  frontend up"
 }
 
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || { echo "✗ docker not found in WSL"; exit 1; }
+  if docker info >/dev/null 2>&1; then return; fi
+  echo "▸ docker engine not ready — starting Docker Desktop…"
+  # Launch Docker Desktop on the Windows side (no-op if it's already starting).
+  local dd="/mnt/c/Program Files/Docker/Docker/Docker Desktop.exe"
+  [ -f "$dd" ] && nohup cmd.exe /c start "" "$dd" >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && { echo "  docker engine up"; return; }; sleep 2; done
+  echo "✗ docker engine didn't come up in time — open Docker Desktop manually and retry"; exit 1
+}
+
 case "${1:-up}" in
   up)
-    command -v docker >/dev/null 2>&1 || { echo "✗ docker not found — start Docker Desktop first"; exit 1; }
-    docker info >/dev/null 2>&1 || { echo "✗ docker engine not ready — start Docker Desktop first"; exit 1; }
+    ensure_docker
     start_services
     start_ollama
     start_backend
